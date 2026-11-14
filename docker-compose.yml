@@ -1,0 +1,29 @@
+# LedgerCore — local development database
+# Uses variables from .env (git-ignored); never hardcode secrets here.
+# Start: docker compose up -d
+# Stop (keep data): docker compose stop
+# Wipe data (destructive!): docker compose down -v
+
+services:
+  db:
+    # postgres:18 tracks the latest 18.x patch; never use "latest".
+    image: postgres:18
+    container_name: ledgercore-db
+    restart: unless-stopped
+    env_file:
+      - .env
+    # PostgreSQL reads POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD from env_file.
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:
+    name: ledgercore_pgdata

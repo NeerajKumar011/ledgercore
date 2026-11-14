@@ -12,7 +12,9 @@ class TestcontainersConfiguration {
 	@Bean
 	@ServiceConnection
 	PostgreSQLContainer postgresContainer() {
-		return new PostgreSQLContainer(DockerImageName.parse("postgres:latest"));
+		// Pin to same major version as docker-compose.yml (postgres:18).
+		// Using a specific patch tag so the image is immutable in CI.
+		return new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
 	}
 
 }
