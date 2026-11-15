@@ -1,10 +1,10 @@
 # LedgerCore Agent Report
 
 ## Current status
-- **Phase / step:** Phase 1, Step 1 — Database Setup
+- **Phase / step:** Phase 1, Step 2 — JPA Entities, Repositories, Money, and Tests
 - **Overall:** DONE
-- **Last updated:** 2026-11-14T22:05 IST
-- **One-line summary:** Phase 1 Step 1 verified end-to-end: docker-compose PostgreSQL 18 service healthy on port 5433, Flyway V1 migration applied and validated, ledger_entries INSERT-only trigger proven via real SQL tests, Testcontainers test passed with UTC timezone enforcement, container cleanly stopped with volume preserved.
+- **Last updated:** 2026-11-14T22:20 IST
+- **One-line summary:** All domain entities (`Account`, `Transfer`, `LedgerEntry`), string enums, Spring Data repositories, immutable `Money` record, 8 JUnit 5 unit tests, and 10 PostgreSQL 18 Testcontainers integration tests implemented and passing (`ddl-auto=validate` confirmed against both Testcontainers and Docker Compose PostgreSQL 18).
 
 ---
 
@@ -19,7 +19,7 @@
 ---
 
 ## Manual actions needed from the human
-None! All tasks and verification steps 6a–6f are complete and passing.
+None! All unit and integration tests (19 total) are passing and verified end-to-end.
 
 ---
 
@@ -101,6 +101,7 @@ None! All tasks and verification steps 6a–6f are complete and passing.
   - All Phase 0 work (agent rules, `.env.example`, `.gitignore` hygiene, timezone fix, postgres:18.6 pin) was committed and pushed as commit `8cedc26`.
 
 - **Decisions made:** No changes; this is a record-only entry.
+- **Correction:** Commit `8cedc26` contained only the Phase 0 skeleton; the UTC pom settings and the `postgres:18` pin were made later during Phase 1. The Phase 1 Step 1 commit is made by the human.
 
 - **Next step proposed:** Phase 1, Step 1 — database setup.
 
@@ -243,3 +244,129 @@ None! All tasks and verification steps 6a–6f are complete and passing.
 
 - **Next step proposed:**
   Phase 1, Step 2: Implement domain entities (Account, Transfer, LedgerEntry) mapped with Spring Data JPA and optimistic locking.
+
+### Entry 6 — Phase 1 Step 2 — JPA Entities, Repositories, Money, and Tests — 2026-11-14 22:20 IST
+
+- **Status:** DONE (all tasks and verification steps completed and passing)
+
+- **What was done:**
+  - Read `docs/AGENT_RULES.md` before writing code; strictly adhered to Rule 4 (Money is BIGINT minor units, never float/double), Rule 6 (no tests disabled/deleted), and Rule 9 (Hibernate 7 / Spring Boot 4 imports and annotations).
+  - Established package layout: `com.ledgercore.account`, `com.ledgercore.transfer`, `com.ledgercore.ledger`, and `com.ledgercore.common`.
+  - Created domain string enums:
+    - `AccountStatus`: `ACTIVE`, `FROZEN`, `CLOSED`
+    - `TransferStatus`: `PENDING`, `COMPLETED`, `FAILED`
+    - `EntryDirection`: `DEBIT`, `CREDIT`
+  - Created value record `com.ledgercore.common.Money`:
+    - Immutable Java record with `long amountMinor` and `java.util.Currency currency`.
+    - Arithmetic operations `plus(Money)` and `minus(Money)` backed by `Math.addExact` and `Math.subtractExact` to prevent silent overflow/underflow.
+    - Strict validation rejecting mismatched currencies and null arguments. Zero floating-point arithmetic.
+  - Implemented JPA Entities mapped strictly to `V1__init_schema.sql` without Lombok:
+    - `Account`: Mapped to `accounts`. UUID primary key, optimistic locking via `@Version Long version`, `balanceMinor` as primitive `long`. Encapsulated state: no public setters, static factory methods `create()` and `reconstitute()`, getters only, domain transition methods `credit()`, `debit()`, `setStatus()`. Currency column mapped with `@JdbcTypeCode(SqlTypes.CHAR)` and `columnDefinition = "char(3)"` to satisfy `ddl-auto=validate`.
+    - `Transfer`: Mapped to `transfers`. `fromAccountId` and `toAccountId` stored as plain `UUID` attributes (no entity navigation). Factory method `create()`, lifecycle status transitions `markCompleted()` and `markFailed()`.
+    - `LedgerEntry`: Mapped to `ledger_entries`. Annotated with Hibernate `@Immutable`. All fields immutable (`final`), no setters, created strictly via factory method `create()`.
+  - Implemented Spring Data JPA interfaces without custom locking queries:
+    - `AccountRepository`: `findByAccountNumber(String)`
+    - `TransferRepository`: `findByIdempotencyKey(String)`
+    - `LedgerEntryRepository`: `findByTransferId(UUID)`, `findByAccountIdOrderByCreatedAtAsc(UUID)`
+  - Implemented comprehensive test suite:
+    - `MoneyTest`: 8 pure JUnit 5 unit tests verifying construction, addition, subtraction, arithmetic overflow detection (`ArithmeticException`), currency mismatch rejection (`IllegalArgumentException`), and null handling.
+    - `DomainIntegrationTest`: 10 Spring Boot integration tests on live PostgreSQL 18 via Testcontainers:
+      1. Schema validation against live Postgres with `spring.jpa.hibernate.ddl-auto=validate`.
+      2. Account persistence, retrieval, and getters.
+      3. Transfer creation and state transition.
+      4. LedgerEntry creation and immutability attributes.
+      5. Account unique constraint enforcement (`accounts_account_number_key`).
+      6. Transfer unique constraint enforcement (`transfers_idempotency_key_key`).
+      7. Account balance CHECK constraint enforcement (`accounts_balance_non_negative_chk`).
+      8. Ledger entry amount CHECK constraint enforcement (`ledger_entries_amount_positive_chk`).
+      9. Database trigger immutability enforcement: native SQL UPDATE and DELETE on `ledger_entries` are rejected by the `ledger_entries_no_update_delete` trigger function (`ledger_entries is INSERT-only: ... is forbidden`).
+      10. Optimistic locking `@Version` increment verification on balance modification.
+  - Verification:
+    - Ran `.\mvnw.cmd test` with `JAVA_TOOL_OPTIONS` unset: 19 tests run (1 context load, 8 unit, 10 integration), 0 failures, 0 errors, BUILD SUCCESS.
+    - Ran `docker compose up -d` followed by `.\mvnw.cmd spring-boot:run` to confirm Flyway and `ddl-auto=validate` against the Docker Compose PostgreSQL 18 instance. Confirmed clean startup on port 8081. Cleanly stopped app and ran `docker compose stop`.
+
+- **Files created/changed (with explanation):**
+
+  | File | Action | Explanation |
+  |------|--------|-------------|
+  | `src/main/java/com/ledgercore/common/Money.java` | Created | Immutable money value record using `long amountMinor`, `Currency`, and overflow-safe arithmetic. |
+  | `src/main/java/com/ledgercore/account/AccountStatus.java` | Created | Enum representing account lifecycle statuses (`ACTIVE`, `FROZEN`, `CLOSED`). |
+  | `src/main/java/com/ledgercore/transfer/TransferStatus.java` | Created | Enum representing transfer statuses (`PENDING`, `COMPLETED`, `FAILED`). |
+  | `src/main/java/com/ledgercore/ledger/EntryDirection.java` | Created | Enum representing double-entry book directions (`DEBIT`, `CREDIT`). |
+  | `src/main/java/com/ledgercore/account/Account.java` | Created | Account JPA entity with `@Version`, primitive long money, `@JdbcTypeCode(SqlTypes.CHAR)`, factory methods and getters. |
+  | `src/main/java/com/ledgercore/transfer/Transfer.java` | Created | Transfer JPA entity storing from/to account IDs as plain UUIDs, with status transitions. |
+  | `src/main/java/com/ledgercore/ledger/LedgerEntry.java` | Created | Immutable ledger entry JPA entity with Hibernate `@Immutable`, constructor/factory only. |
+  | `src/main/java/com/ledgercore/account/AccountRepository.java` | Created | Spring Data repository for `Account` with `findByAccountNumber`. |
+  | `src/main/java/com/ledgercore/transfer/TransferRepository.java` | Created | Spring Data repository for `Transfer` with `findByIdempotencyKey`. |
+  | `src/main/java/com/ledgercore/ledger/LedgerEntryRepository.java` | Created | Spring Data repository for `LedgerEntry` with `findByTransferId` and `findByAccountIdOrderByCreatedAtAsc`. |
+  | `src/test/java/com/ledgercore/common/MoneyTest.java` | Created | Pure JUnit 5 test suite verifying `Money` behavior, arithmetic, overflow, mismatch, and null checks. |
+  | `src/test/java/com/ledgercore/DomainIntegrationTest.java` | Created | Integration test suite on live PostgreSQL 18 verifying schema validation, entities, constraints, triggers, and `@Version`. |
+  | `docs/AGENT_REPORT.md` | Modified | Updated Current status to DONE, corrected Entry 3, and appended this Entry 6. |
+
+- **Commands run and results (key lines):**
+
+  ```
+  1. mvnw.cmd test (without JAVA_TOOL_OPTIONS):
+    [INFO] Running com.ledgercore.common.MoneyTest
+    [INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.266 s -- in com.ledgercore.common.MoneyTest
+    [INFO] Running com.ledgercore.DomainIntegrationTest
+    2026-11-14T16:47:56.504Z  INFO 22256 --- [ledgercore] [main] com.ledgercore.DomainIntegrationTest : Starting DomainIntegrationTest
+    2026-11-14T16:48:17.442Z  WARN 22256 --- [ledgercore] [main] org.hibernate.orm.jdbc.error : ERROR: duplicate key value violates unique constraint "transfers_idempotency_key_key"
+    2026-11-14T16:48:17.466Z  WARN 22256 --- [ledgercore] [main] org.hibernate.orm.jdbc.error : ERROR: new row for relation "accounts" violates check constraint "accounts_balance_non_negative_chk"
+    2026-11-14T16:48:17.512Z  WARN 22256 --- [ledgercore] [main] org.hibernate.orm.jdbc.error : ERROR: new row for relation "ledger_entries" violates check constraint "ledger_entries_amount_positive_chk"
+    2026-11-14T16:48:17.540Z  WARN 22256 --- [ledgercore] [main] org.hibernate.orm.jdbc.error : ERROR: duplicate key value violates unique constraint "accounts_account_number_key"
+    2026-11-14T16:48:17.589Z  WARN 22256 --- [ledgercore] [main] org.hibernate.orm.jdbc.error : ERROR: ledger_entries is INSERT-only: DELETE on row id=... is forbidden
+    2026-11-14T16:48:17.696Z  WARN 22256 --- [ledgercore] [main] org.hibernate.orm.jdbc.error : ERROR: ledger_entries is INSERT-only: UPDATE on row id=... is forbidden
+    [INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 23.00 s -- in com.ledgercore.DomainIntegrationTest
+    [INFO] Running com.ledgercore.LedgercoreApplicationTests
+    [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.095 s -- in com.ledgercore.LedgercoreApplicationTests
+    [INFO] Results:
+    [INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0
+    [INFO] BUILD SUCCESS (33.159 s)
+
+  2. docker compose up -d
+    Container ledgercore-db Started
+    NAME            IMAGE         STATUS                   PORTS
+    ledgercore-db   postgres:18   Up 5 seconds (healthy)   0.0.0.0:5433->5432/tcp
+
+  3. mvnw.cmd spring-boot:run
+    2026-11-14T16:48:51.473Z  INFO 9000 --- [ledgercore] [main] org.flywaydb.core.FlywayExecutor : Database: jdbc:postgresql://localhost:5433/ledgercore (PostgreSQL 18.7)
+    2026-11-14T16:48:51.621Z  INFO 9000 --- [ledgercore] [main] o.f.core.internal.command.DbValidate : Successfully validated 1 migration (execution time 00:00.050s)
+    2026-11-14T16:48:51.664Z  INFO 9000 --- [ledgercore] [main] o.f.core.internal.command.DbMigrate : Schema "public" is up to date. No migration necessary.
+    2026-11-14T16:48:53.798Z  INFO 9000 --- [ledgercore] [main] j.LocalContainerEntityManagerFactoryBean : Initialized JPA EntityManagerFactory for persistence unit 'default'
+    2026-11-14T16:48:54.725Z  INFO 9000 --- [ledgercore] [main] o.s.boot.tomcat.TomcatWebServer : Tomcat started on port 8081 (http) with context path '/'
+    2026-11-14T16:48:54.735Z  INFO 9000 --- [ledgercore] [main] com.ledgercore.LedgercoreApplication : Started LedgercoreApplication in 6.463 seconds
+
+  4. docker compose stop
+    Container ledgercore-db Stopping
+    Container ledgercore-db Stopped
+  ```
+
+- **Decisions made and why:**
+  - **`CHAR(3)` currency mapping fix**: Hibernate 7 defaults Java `String` to SQL type `VARCHAR`. The database schema `V1__init_schema.sql` defines `currency char(3)`. Under `spring.jpa.hibernate.ddl-auto=validate`, Hibernate generates a validation error `Schema-validation: wrong column type encountered in column [currency] in table [accounts]; found [char (Types#CHAR)], but expecting [varchar(3) (Types#VARCHAR)]`. Per instructions, the mapping was fixed (never the schema): mapped via `@JdbcTypeCode(SqlTypes.CHAR)` and `@Column(name = "currency", length = 3, nullable = false, columnDefinition = "char(3)")`.
+  - **Plain UUID fields in `Transfer`**: Mapped `fromAccountId` and `toAccountId` as primitive `UUID` columns rather than `@ManyToOne Account` entity references. This avoids accidental lazy-loading traps, unintended cascading updates or fetches during transfer processing, and prevents N+1 query overhead in high-throughput payment processing.
+  - **Test isolation and Trigger immutability tests**: In `DomainIntegrationTest`, the class is annotated with `@Transactional`. Each test executes within its own transaction and rolls back at completion. The trigger test executes native SQL UPDATE and DELETE on `ledger_entries`, catching the custom PostgreSQL trigger exception (`ledger_entries is INSERT-only: ... is forbidden`). This cleanly tests and proves the trigger without modifying or disabling triggers in the test database.
+
+- **How to verify this yourself:**
+  1. `.\mvnw.cmd test` — runs all 19 unit and integration tests against PostgreSQL 18 via Testcontainers; all pass.
+  2. `docker compose up -d` — starts PostgreSQL 18 database.
+  3. `.\mvnw.cmd spring-boot:run` — verifies Flyway and Hibernate schema validation against the Compose database; Tomcat starts on 8081. Stop with Ctrl+C.
+  4. `docker compose stop` — stops the database container while preserving the volume.
+
+- **Suggested commit message:**
+  ```
+  feat(domain): implement JPA entities, repositories, Money record, and test suite
+
+  - Add Money immutable value record with overflow protection and currency checks
+  - Add AccountStatus, TransferStatus, and EntryDirection string enums
+  - Add Account entity with @Version optimistic locking, factory methods, and CHAR(3) currency mapping
+  - Add Transfer entity with plain UUID account references and status lifecycle transitions
+  - Add LedgerEntry immutable entity with Hibernate @Immutable
+  - Add Spring Data JPA AccountRepository, TransferRepository, LedgerEntryRepository
+  - Add MoneyTest JUnit 5 unit test suite (8 tests)
+  - Add DomainIntegrationTest PostgreSQL 18 Testcontainers integration test suite (10 tests)
+  - Update docs/AGENT_REPORT.md with Phase 1 Step 2 verification results
+  ```
+
+- **Next step proposed:**
+  Phase 2: Implement Transfer Service and double-entry transaction engine with pessimistic locking, idempotency enforcement, and audit ledger entries.
