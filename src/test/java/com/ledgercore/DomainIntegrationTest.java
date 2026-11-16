@@ -1,6 +1,7 @@
 package com.ledgercore;
 
 import com.ledgercore.account.Account;
+import com.ledgercore.account.AccountKind;
 import com.ledgercore.account.AccountRepository;
 import com.ledgercore.account.AccountStatus;
 import com.ledgercore.ledger.EntryDirection;
@@ -46,7 +47,8 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("Persist and reload Account with all fields")
     void shouldPersistAndReloadAccount() {
-        Account account = Account.create("ACC-10001", "OWNER-A", "USD", 50000L);
+        Account account = Account.create("ACC-10001", "OWNER-A", "USD");
+        account.credit(50000L);
 
         Account saved = accountRepository.saveAndFlush(account);
         entityManager.clear();
@@ -55,6 +57,7 @@ class DomainIntegrationTest {
         assertThat(reloaded.getAccountNumber()).isEqualTo("ACC-10001");
         assertThat(reloaded.getOwnerRef()).isEqualTo("OWNER-A");
         assertThat(reloaded.getCurrency()).isEqualTo("USD");
+        assertThat(reloaded.getKind()).isEqualTo(AccountKind.CUSTOMER);
         assertThat(reloaded.getStatus()).isEqualTo(AccountStatus.ACTIVE);
         assertThat(reloaded.getBalanceMinor()).isEqualTo(50000L);
         assertThat(reloaded.getVersion()).isEqualTo(0L);
@@ -65,8 +68,13 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("Persist and reload Transfer and LedgerEntry with all fields")
     void shouldPersistAndReloadTransferAndLedgerEntries() {
-        Account sender = accountRepository.save(Account.create("ACC-SENDER-1", "OWNER-S", "USD", 10000L));
-        Account receiver = accountRepository.save(Account.create("ACC-RECEIVER-1", "OWNER-R", "USD", 2000L));
+        Account sender = Account.create("ACC-SENDER-1", "OWNER-S", "USD");
+        sender.credit(10000L);
+        accountRepository.save(sender);
+
+        Account receiver = Account.create("ACC-RECEIVER-1", "OWNER-R", "USD");
+        receiver.credit(2000L);
+        accountRepository.save(receiver);
         accountRepository.flush();
 
         Transfer transfer = Transfer.create("IDEMP-TX-100", "HASH-SHA256-XYZ",
@@ -110,10 +118,12 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("Duplicate account_number is rejected by UNIQUE constraint")
     void shouldRejectDuplicateAccountNumber() {
-        Account first = Account.create("ACC-DUP-1", "OWNER-1", "USD", 1000L);
+        Account first = Account.create("ACC-DUP-1", "OWNER-1", "USD");
+        first.credit(1000L);
         accountRepository.saveAndFlush(first);
 
-        Account second = Account.create("ACC-DUP-1", "OWNER-2", "USD", 2000L);
+        Account second = Account.create("ACC-DUP-1", "OWNER-2", "USD");
+        second.credit(2000L);
 
         assertThatThrownBy(() -> accountRepository.saveAndFlush(second))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -122,8 +132,13 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("Duplicate idempotency_key is rejected by UNIQUE constraint")
     void shouldRejectDuplicateIdempotencyKey() {
-        Account a1 = accountRepository.save(Account.create("ACC-TX-1", "O1", "USD", 5000L));
-        Account a2 = accountRepository.save(Account.create("ACC-TX-2", "O2", "USD", 5000L));
+        Account a1 = Account.create("ACC-TX-1", "O1", "USD");
+        a1.credit(5000L);
+        accountRepository.save(a1);
+
+        Account a2 = Account.create("ACC-TX-2", "O2", "USD");
+        a2.credit(5000L);
+        accountRepository.save(a2);
         accountRepository.flush();
 
         Transfer tx1 = Transfer.create("IDEMP-DUP-KEY", "HASH-1", a1.getId(), a2.getId(), 500L, "USD");
@@ -136,15 +151,15 @@ class DomainIntegrationTest {
     }
 
     @Test
-    @DisplayName("DB CHECK constraint rejects negative account balance")
+    @DisplayName("DB CHECK constraint rejects negative customer account balance")
     void shouldRejectNegativeAccountBalance() {
         UUID accountId = UUID.randomUUID();
         Instant now = Instant.now();
 
         assertThatThrownBy(() -> {
             entityManager.createNativeQuery("""
-                    INSERT INTO accounts (id, account_number, owner_ref, currency, status, balance_minor, version, created_at, updated_at)
-                    VALUES (:id, 'ACC-NEGATIVE', 'OWNER-NEG', 'USD', 'ACTIVE', -100, 0, :now, :now)
+                    INSERT INTO accounts (id, account_number, owner_ref, currency, status, balance_minor, version, created_at, updated_at, kind)
+                    VALUES (:id, 'ACC-NEGATIVE', 'OWNER-NEG', 'USD', 'ACTIVE', -100, 0, :now, :now, 'CUSTOMER')
                     """)
                     .setParameter("id", accountId)
                     .setParameter("now", now)
@@ -156,8 +171,13 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("DB CHECK constraint rejects transfer with zero amount")
     void shouldRejectZeroAmountTransfer() {
-        Account a1 = accountRepository.save(Account.create("ACC-Z-1", "O1", "USD", 5000L));
-        Account a2 = accountRepository.save(Account.create("ACC-Z-2", "O2", "USD", 5000L));
+        Account a1 = Account.create("ACC-Z-1", "O1", "USD");
+        a1.credit(5000L);
+        accountRepository.save(a1);
+
+        Account a2 = Account.create("ACC-Z-2", "O2", "USD");
+        a2.credit(5000L);
+        accountRepository.save(a2);
         accountRepository.flush();
 
         UUID txId = UUID.randomUUID();
@@ -180,8 +200,13 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("DB CHECK constraint rejects ledger entry with zero amount")
     void shouldRejectZeroAmountLedgerEntry() {
-        Account a1 = accountRepository.save(Account.create("ACC-ZL-1", "O1", "USD", 5000L));
-        Account a2 = accountRepository.save(Account.create("ACC-ZL-2", "O2", "USD", 5000L));
+        Account a1 = Account.create("ACC-ZL-1", "O1", "USD");
+        a1.credit(5000L);
+        accountRepository.save(a1);
+
+        Account a2 = Account.create("ACC-ZL-2", "O2", "USD");
+        a2.credit(5000L);
+        accountRepository.save(a2);
         accountRepository.flush();
 
         Transfer tx = transferRepository.saveAndFlush(
@@ -208,8 +233,13 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("ledger_entries UPDATE fails via database trigger")
     void shouldFailWhenUpdatingLedgerEntryViaTrigger() {
-        Account a1 = accountRepository.save(Account.create("ACC-TRG-1", "O1", "USD", 5000L));
-        Account a2 = accountRepository.save(Account.create("ACC-TRG-2", "O2", "USD", 5000L));
+        Account a1 = Account.create("ACC-TRG-1", "O1", "USD");
+        a1.credit(5000L);
+        accountRepository.save(a1);
+
+        Account a2 = Account.create("ACC-TRG-2", "O2", "USD");
+        a2.credit(5000L);
+        accountRepository.save(a2);
         accountRepository.flush();
 
         Transfer tx = transferRepository.saveAndFlush(
@@ -218,6 +248,9 @@ class DomainIntegrationTest {
 
         LedgerEntry entry = ledgerEntryRepository.saveAndFlush(
                 LedgerEntry.create(tx.getId(), a1.getId(), EntryDirection.DEBIT, 500L, "USD")
+        );
+        ledgerEntryRepository.saveAndFlush(
+                LedgerEntry.create(tx.getId(), a2.getId(), EntryDirection.CREDIT, 500L, "USD")
         );
 
         assertThatThrownBy(() -> {
@@ -233,8 +266,13 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("ledger_entries DELETE fails via database trigger")
     void shouldFailWhenDeletingLedgerEntryViaTrigger() {
-        Account a1 = accountRepository.save(Account.create("ACC-TRG-DEL-1", "O1", "USD", 5000L));
-        Account a2 = accountRepository.save(Account.create("ACC-TRG-DEL-2", "O2", "USD", 5000L));
+        Account a1 = Account.create("ACC-TRG-DEL-1", "O1", "USD");
+        a1.credit(5000L);
+        accountRepository.save(a1);
+
+        Account a2 = Account.create("ACC-TRG-DEL-2", "O2", "USD");
+        a2.credit(5000L);
+        accountRepository.save(a2);
         accountRepository.flush();
 
         Transfer tx = transferRepository.saveAndFlush(
@@ -243,6 +281,9 @@ class DomainIntegrationTest {
 
         LedgerEntry entry = ledgerEntryRepository.saveAndFlush(
                 LedgerEntry.create(tx.getId(), a1.getId(), EntryDirection.DEBIT, 500L, "USD")
+        );
+        ledgerEntryRepository.saveAndFlush(
+                LedgerEntry.create(tx.getId(), a2.getId(), EntryDirection.CREDIT, 500L, "USD")
         );
 
         assertThatThrownBy(() -> {
@@ -258,11 +299,12 @@ class DomainIntegrationTest {
     @Test
     @DisplayName("Account version increments on update")
     void shouldIncrementAccountVersionOnUpdate() {
-        Account account = Account.create("ACC-VER-1", "OWNER-V", "USD", 10000L);
+        Account account = Account.create("ACC-VER-1", "OWNER-V", "USD");
+        account.credit(10000L);
         Account saved = accountRepository.saveAndFlush(account);
         assertThat(saved.getVersion()).isEqualTo(0L);
 
-        saved.updateBalance(15000L);
+        saved.credit(5000L);
         Account updated = accountRepository.saveAndFlush(saved);
         entityManager.clear();
 

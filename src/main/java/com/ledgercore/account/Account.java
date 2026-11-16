@@ -15,15 +15,24 @@ import org.hibernate.type.SqlTypes;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
- * Customer account holding a balance in minor currency units.
+ * Account holding a balance in minor currency units.
+ * <p>Supports regular {@link AccountKind#CUSTOMER} accounts and internal
+ * {@link AccountKind#SYSTEM} funding accounts.
  * <p>Optimistic locking is enforced via the {@code version} field.
  * Public setters are omitted by design; instances are created via factory methods.
+ * Status transitions are expressed through domain methods: {@link #freeze()},
+ * {@link #close()}, and {@link #reactivate()}. {@code CLOSED} is terminal.
+ * <p>Balance modifications must strictly be made via {@link #debit(long)} and
+ * {@link #credit(long)}.
  */
 @Entity
 @Table(name = "accounts")
 public class Account {
+
+    private static final Pattern CURRENCY_PATTERN = Pattern.compile("^[A-Z]{3}$");
 
     @Id
     @Column(name = "id", nullable = false, updatable = false)
@@ -38,6 +47,10 @@ public class Account {
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "currency", nullable = false, length = 3, columnDefinition = "char(3)")
     private String currency;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "kind", nullable = false, length = 10)
+    private AccountKind kind;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 10)
@@ -61,22 +74,22 @@ public class Account {
     }
 
     /**
-     * Factory method to create a new Account with an initial balance.
+     * Factory method to create a new CUSTOMER Account with zero initial balance.
      */
-    public static Account create(String accountNumber, String ownerRef, String currency, long initialBalanceMinor) {
-        return create(UUID.randomUUID(), accountNumber, ownerRef, currency, initialBalanceMinor);
+    public static Account create(String accountNumber, String ownerRef, String currency) {
+        return create(UUID.randomUUID(), accountNumber, ownerRef, currency);
     }
 
     /**
-     * Factory method to create an Account with a pre-determined UUID (useful for testing or migrations).
+     * Factory method to create a CUSTOMER Account with a pre-determined UUID and zero initial balance.
      */
-    public static Account create(UUID id, String accountNumber, String ownerRef, String currency, long initialBalanceMinor) {
+    public static Account create(UUID id, String accountNumber, String ownerRef, String currency) {
         Objects.requireNonNull(id, "id must not be null");
         Objects.requireNonNull(accountNumber, "accountNumber must not be null");
         Objects.requireNonNull(ownerRef, "ownerRef must not be null");
         Objects.requireNonNull(currency, "currency must not be null");
-        if (currency.length() != 3) {
-            throw new IllegalArgumentException("currency must be a 3-letter ISO code: " + currency);
+        if (!CURRENCY_PATTERN.matcher(currency).matches()) {
+            throw new IllegalArgumentException("currency must match ^[A-Z]{3}$: " + currency);
         }
 
         Account account = new Account();
@@ -84,8 +97,9 @@ public class Account {
         account.accountNumber = accountNumber;
         account.ownerRef = ownerRef;
         account.currency = currency;
+        account.kind = AccountKind.CUSTOMER;
         account.status = AccountStatus.ACTIVE;
-        account.balanceMinor = initialBalanceMinor;
+        account.balanceMinor = 0L;
         account.version = 0L;
         Instant now = Instant.now();
         account.createdAt = now;
@@ -94,10 +108,36 @@ public class Account {
     }
 
     /**
-     * Factory method to create an Account with zero initial balance.
+     * Factory method to create a SYSTEM funding account for a given currency.
+     * System funding accounts have the standardized account number "SYSTEM-FUNDING-&lt;CCY&gt;".
      */
-    public static Account create(String accountNumber, String ownerRef, String currency) {
-        return create(accountNumber, ownerRef, currency, 0L);
+    public static Account createSystem(String currency) {
+        return createSystem(UUID.randomUUID(), currency);
+    }
+
+    /**
+     * Factory method to create a SYSTEM funding account with a pre-determined UUID.
+     */
+    public static Account createSystem(UUID id, String currency) {
+        Objects.requireNonNull(id, "id must not be null");
+        Objects.requireNonNull(currency, "currency must not be null");
+        if (!CURRENCY_PATTERN.matcher(currency).matches()) {
+            throw new IllegalArgumentException("currency must match ^[A-Z]{3}$: " + currency);
+        }
+
+        Account account = new Account();
+        account.id = id;
+        account.accountNumber = "SYSTEM-FUNDING-" + currency;
+        account.ownerRef = "SYSTEM";
+        account.currency = currency;
+        account.kind = AccountKind.SYSTEM;
+        account.status = AccountStatus.ACTIVE;
+        account.balanceMinor = 0L;
+        account.version = 0L;
+        Instant now = Instant.now();
+        account.createdAt = now;
+        account.updatedAt = now;
+        return account;
     }
 
     @PrePersist
@@ -105,6 +145,9 @@ public class Account {
         Instant now = Instant.now();
         if (this.id == null) {
             this.id = UUID.randomUUID();
+        }
+        if (this.kind == null) {
+            this.kind = AccountKind.CUSTOMER;
         }
         if (this.createdAt == null) {
             this.createdAt = now;
@@ -119,19 +162,105 @@ public class Account {
         this.updatedAt = Instant.now();
     }
 
-    // Domain update methods (no public setters)
+    // -------------------------------------------------------------------------
+    // Domain debit / credit methods — no public setters, no updateBalance
+    // -------------------------------------------------------------------------
 
-    public void updateBalance(long newBalanceMinor) {
-        this.balanceMinor = newBalanceMinor;
+    /**
+     * Debits the account by {@code amountMinor}.
+     * <p><b>Double-entry requirement:</b> Every call to {@code debit} must be
+     * matched by a corresponding ledger entry in the same transaction.
+     *
+     * @param amountMinor amount to debit in minor units; must be strictly positive
+     * @throws IllegalArgumentException if {@code amountMinor <= 0}
+     * @throws IllegalStateException if the account is not {@link AccountStatus#ACTIVE}
+     * @throws InsufficientFundsException if this is a {@link AccountKind#CUSTOMER}
+     *         account and {@code balanceMinor < amountMinor}
+     * @throws ArithmeticException if numeric underflow occurs
+     */
+    public void debit(long amountMinor) {
+        if (amountMinor <= 0) {
+            throw new IllegalArgumentException("amountMinor must be strictly positive (> 0), got: " + amountMinor);
+        }
+        if (this.status != AccountStatus.ACTIVE) {
+            throw new IllegalStateException("Cannot debit account " + id + ": status is " + status);
+        }
+        if (this.kind == AccountKind.CUSTOMER && this.balanceMinor < amountMinor) {
+            throw new InsufficientFundsException(this.id, this.balanceMinor, amountMinor);
+        }
+        this.balanceMinor = Math.subtractExact(this.balanceMinor, amountMinor);
         this.updatedAt = Instant.now();
     }
 
-    public void changeStatus(AccountStatus newStatus) {
-        this.status = Objects.requireNonNull(newStatus, "status must not be null");
+    /**
+     * Credits the account by {@code amountMinor}.
+     * <p><b>Double-entry requirement:</b> Every call to {@code credit} must be
+     * matched by a corresponding ledger entry in the same transaction.
+     *
+     * @param amountMinor amount to credit in minor units; must be strictly positive
+     * @throws IllegalArgumentException if {@code amountMinor <= 0}
+     * @throws IllegalStateException if the account is not {@link AccountStatus#ACTIVE}
+     * @throws ArithmeticException if numeric overflow occurs
+     */
+    public void credit(long amountMinor) {
+        if (amountMinor <= 0) {
+            throw new IllegalArgumentException("amountMinor must be strictly positive (> 0), got: " + amountMinor);
+        }
+        if (this.status != AccountStatus.ACTIVE) {
+            throw new IllegalStateException("Cannot credit account " + id + ": status is " + status);
+        }
+        this.balanceMinor = Math.addExact(this.balanceMinor, amountMinor);
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * Transitions an ACTIVE account to FROZEN.
+     * @throws IllegalStateException if the account is not ACTIVE
+     */
+    public void freeze() {
+        if (this.status != AccountStatus.ACTIVE) {
+            throw new IllegalStateException(
+                    "Cannot freeze account " + id + ": current status is " + status);
+        }
+        this.status = AccountStatus.FROZEN;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * Transitions an ACTIVE or FROZEN account to CLOSED.
+     * CLOSED is terminal; it cannot be undone.
+     * @throws IllegalStateException if the account is already CLOSED
+     */
+    public void close() {
+        if (this.status == AccountStatus.CLOSED) {
+            throw new IllegalStateException(
+                    "Cannot close account " + id + ": already CLOSED");
+        }
+        this.status = AccountStatus.CLOSED;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * Transitions a FROZEN account back to ACTIVE.
+     * CLOSED accounts are terminal and cannot be reactivated.
+     * @throws IllegalStateException if the account is ACTIVE or CLOSED
+     */
+    public void reactivate() {
+        if (this.status == AccountStatus.CLOSED) {
+            throw new IllegalStateException(
+                    "Cannot reactivate account " + id + ": CLOSED is a terminal state");
+        }
+        if (this.status == AccountStatus.ACTIVE) {
+            throw new IllegalStateException(
+                    "Cannot reactivate account " + id + ": already ACTIVE");
+        }
+        this.status = AccountStatus.ACTIVE;
+        this.updatedAt = Instant.now();
+    }
+
+    // -------------------------------------------------------------------------
     // Getters
+    // -------------------------------------------------------------------------
 
     public UUID getId() {
         return id;
@@ -147,6 +276,10 @@ public class Account {
 
     public String getCurrency() {
         return currency;
+    }
+
+    public AccountKind getKind() {
+        return kind;
     }
 
     public AccountStatus getStatus() {
