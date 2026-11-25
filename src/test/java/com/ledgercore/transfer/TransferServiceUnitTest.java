@@ -212,4 +212,49 @@ class TransferServiceUnitTest {
                 .isInstanceOf(InvalidTransferRequestException.class)
                 .hasMessageContaining("currency");
     }
+
+    // ── isLockTimeout unit tests ──────────────────────────────────────────────
+
+    @Test
+    @DisplayName("isLockTimeout returns true for direct SQLException with SQLState 55P03")
+    void isLockTimeout_directSqlState55P03() {
+        java.sql.SQLException sqlEx = new java.sql.SQLException("canceling statement due to lock timeout", "55P03");
+        assertThat(service.isLockTimeout(sqlEx)).isTrue();
+    }
+
+    @Test
+    @DisplayName("isLockTimeout returns true for nested SQLException with SQLState 55P03 in cause chain")
+    void isLockTimeout_nestedSqlState55P03() {
+        java.sql.SQLException rootSqlEx = new java.sql.SQLException("statement canceled", "55P03");
+        RuntimeException wrapper = new RuntimeException("could not execute statement",
+                new IllegalStateException("transaction rolled back", rootSqlEx));
+        assertThat(service.isLockTimeout(wrapper)).isTrue();
+    }
+
+    @Test
+    @DisplayName("isLockTimeout returns false for SQLException with other SQLStates")
+    void isLockTimeout_otherSqlState() {
+        java.sql.SQLException sqlEx = new java.sql.SQLException("unique constraint violation", "23505");
+        assertThat(service.isLockTimeout(sqlEx)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isLockTimeout returns false for plain RuntimeException")
+    void isLockTimeout_plainRuntimeException() {
+        RuntimeException ex = new RuntimeException("generic failure");
+        assertThat(service.isLockTimeout(ex)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isLockTimeout returns false for null")
+    void isLockTimeout_nullInput() {
+        assertThat(service.isLockTimeout(null)).isFalse();
+    }
+
+    @Test
+    @DisplayName("isLockTimeout returns false when message contains 'lock timeout' but SQLState is not 55P03")
+    void isLockTimeout_messageTextWithoutSqlState55P03() {
+        RuntimeException ex = new RuntimeException("canceling statement due to lock timeout");
+        assertThat(service.isLockTimeout(ex)).isFalse();
+    }
 }

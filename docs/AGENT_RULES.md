@@ -18,3 +18,7 @@
    Boot 3 style code or dependency names from memory. Check the actual
    versions in pom.xml and the official Spring Boot 4 documentation,
    and tell me when you are unsure rather than guessing.
+10. **Reports must quote real command output verbatim. Descriptions of tests and
+   code must be produced by READING the current source file, never from memory.
+   If a number, name or behavior in the report cannot be backed by a file or a
+   pasted output, do not write it.**

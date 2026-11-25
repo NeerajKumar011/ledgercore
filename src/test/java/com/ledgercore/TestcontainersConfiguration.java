@@ -9,12 +9,20 @@ import org.testcontainers.utility.DockerImageName;
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
 
+	private static final PostgreSQLContainer POSTGRES =
+			new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
+
+	static {
+		POSTGRES.start();
+	}
+
 	@Bean
 	@ServiceConnection
 	PostgreSQLContainer postgresContainer() {
 		// Pin to same major version as docker-compose.yml (postgres:18).
-		// Using a specific patch tag so the image is immutable in CI.
-		return new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
+		// Shared singleton across all Spring test contexts avoids starting
+		// multiple Docker containers, saving significant total test execution time.
+		return POSTGRES;
 	}
 
 }
