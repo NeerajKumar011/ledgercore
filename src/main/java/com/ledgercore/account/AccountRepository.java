@@ -27,6 +27,12 @@ public interface AccountRepository extends JpaRepository<Account, UUID> {
     @Query("SELECT a.id FROM Account a WHERE a.accountNumber = :accountNumber")
     Optional<UUID> findIdByAccountNumber(@Param("accountNumber") String accountNumber);
 
+    @Query("SELECT a FROM Account a WHERE a.ownerUserId = :ownerUserId ORDER BY a.createdAt DESC, a.id DESC")
+    org.springframework.data.domain.Slice<Account> findByOwnerUserId(@Param("ownerUserId") UUID ownerUserId, org.springframework.data.domain.Pageable pageable);
+
+    @Query("SELECT a.ownerUserId FROM Account a WHERE a.id = :id")
+    Optional<UUID> findOwnerUserIdById(@Param("id") UUID id);
+
     /**
      * Locks a single account row with {@code SELECT ... FOR UPDATE}.
      * <p>Must be called within an active transaction. Returns empty if the
@@ -51,7 +57,7 @@ public interface AccountRepository extends JpaRepository<Account, UUID> {
             VALUES
                 (:id, :accountNumber, 'SYSTEM', :currency, 'ACTIVE',
                  0, 0, :now, :now, 'SYSTEM')
-            ON CONFLICT (account_number) DO NOTHING
+            ON CONFLICT (currency) WHERE (kind = 'SYSTEM') DO NOTHING
             """)
     int insertSystemFundingIfAbsent(
             @Param("id")            UUID    id,

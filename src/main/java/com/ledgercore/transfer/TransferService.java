@@ -308,16 +308,13 @@ public class TransferService {
         }
     }
 
-    private boolean isLockTimeout(Throwable throwable) {
+    boolean isLockTimeout(Throwable throwable) {
         Throwable current = throwable;
         while (current != null) {
             if (current instanceof SQLException sqlEx) {
                 if ("55P03".equals(sqlEx.getSQLState())) {
                     return true;
                 }
-            }
-            if (current.getMessage() != null && current.getMessage().toLowerCase().contains("lock timeout")) {
-                return true;
             }
             current = current.getCause();
         }

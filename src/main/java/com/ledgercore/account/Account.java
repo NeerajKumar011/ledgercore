@@ -44,6 +44,9 @@ public class Account {
     @Column(name = "owner_ref", nullable = false, length = 255)
     private String ownerRef;
 
+    @Column(name = "owner_user_id")
+    private UUID ownerUserId;
+
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "currency", nullable = false, length = 3, columnDefinition = "char(3)")
     private String currency;
@@ -74,16 +77,24 @@ public class Account {
     }
 
     /**
-     * Factory method to create a new CUSTOMER Account with zero initial balance.
+     * Factory method to create a new CUSTOMER Account with zero initial balance and optional ownerUserId.
      */
     public static Account create(String accountNumber, String ownerRef, String currency) {
-        return create(UUID.randomUUID(), accountNumber, ownerRef, currency);
+        return create(UUID.randomUUID(), accountNumber, ownerRef, currency, null);
+    }
+
+    public static Account create(String accountNumber, String ownerRef, String currency, UUID ownerUserId) {
+        return create(UUID.randomUUID(), accountNumber, ownerRef, currency, ownerUserId);
     }
 
     /**
      * Factory method to create a CUSTOMER Account with a pre-determined UUID and zero initial balance.
      */
     public static Account create(UUID id, String accountNumber, String ownerRef, String currency) {
+        return create(id, accountNumber, ownerRef, currency, null);
+    }
+
+    public static Account create(UUID id, String accountNumber, String ownerRef, String currency, UUID ownerUserId) {
         Objects.requireNonNull(id, "id must not be null");
         Objects.requireNonNull(accountNumber, "accountNumber must not be null");
         Objects.requireNonNull(ownerRef, "ownerRef must not be null");
@@ -96,6 +107,7 @@ public class Account {
         account.id = id;
         account.accountNumber = accountNumber;
         account.ownerRef = ownerRef;
+        account.ownerUserId = ownerUserId;
         account.currency = currency;
         account.kind = AccountKind.CUSTOMER;
         account.status = AccountStatus.ACTIVE;
@@ -272,6 +284,10 @@ public class Account {
 
     public String getOwnerRef() {
         return ownerRef;
+    }
+
+    public UUID getOwnerUserId() {
+        return ownerUserId;
     }
 
     public String getCurrency() {
