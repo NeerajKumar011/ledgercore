@@ -30,6 +30,9 @@ public interface AccountRepository extends JpaRepository<Account, UUID> {
     @Query("SELECT a FROM Account a WHERE a.ownerUserId = :ownerUserId ORDER BY a.createdAt DESC, a.id DESC")
     org.springframework.data.domain.Slice<Account> findByOwnerUserId(@Param("ownerUserId") UUID ownerUserId, org.springframework.data.domain.Pageable pageable);
 
+    @Query("SELECT a.kind FROM Account a WHERE a.id = :id")
+    Optional<AccountKind> findKindById(@Param("id") UUID id);
+
     @Query("SELECT a.ownerUserId FROM Account a WHERE a.id = :id")
     Optional<UUID> findOwnerUserIdById(@Param("id") UUID id);
 

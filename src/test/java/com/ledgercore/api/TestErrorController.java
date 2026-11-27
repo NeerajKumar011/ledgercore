@@ -17,4 +17,9 @@ public class TestErrorController {
         throw new RuntimeException(
                 "Simulated failure: org.postgresql.util.PSQLException: ERROR: syntax error at or near 'SELECT * FROM accounts'");
     }
+
+    @GetMapping("/illegal-argument")
+    public void throwIllegalArgument() {
+        throw new IllegalArgumentException("sensitive-internal-detail");
+    }
 }

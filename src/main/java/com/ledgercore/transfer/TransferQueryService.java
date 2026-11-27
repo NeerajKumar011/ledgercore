@@ -1,5 +1,7 @@
 package com.ledgercore.transfer;
 
+import com.ledgercore.account.AccountKind;
+import com.ledgercore.account.AccountRepository;
 import com.ledgercore.api.dto.TransferResponse;
 import com.ledgercore.security.AccountOwnershipPolicy;
 import com.ledgercore.security.AuthenticatedUser;
@@ -17,11 +19,14 @@ public class TransferQueryService {
 
     private final TransferRepository transferRepository;
     private final AccountOwnershipPolicy ownershipPolicy;
+    private final AccountRepository accountRepository;
 
     public TransferQueryService(TransferRepository transferRepository,
-                                AccountOwnershipPolicy ownershipPolicy) {
+                                AccountOwnershipPolicy ownershipPolicy,
+                                AccountRepository accountRepository) {
         this.transferRepository = transferRepository;
         this.ownershipPolicy = ownershipPolicy;
+        this.accountRepository = accountRepository;
     }
 
     /**
@@ -45,12 +50,21 @@ public class TransferQueryService {
     }
 
     public TransferResponse toResponse(Transfer t) {
+        UUID fromId = t.getFromAccountId();
+        if (fromId != null && accountRepository.findKindById(fromId).orElse(null) == AccountKind.SYSTEM) {
+            fromId = null;
+        }
+        UUID toId = t.getToAccountId();
+        if (toId != null && accountRepository.findKindById(toId).orElse(null) == AccountKind.SYSTEM) {
+            toId = null;
+        }
+
         return new TransferResponse(
                 t.getId(),
                 t.getStatus(),
                 t.getFailureReason(),
-                t.getFromAccountId(),
-                t.getToAccountId(),
+                fromId,
+                toId,
                 t.getAmountMinor(),
                 t.getCurrency(),
                 t.getCreatedAt()

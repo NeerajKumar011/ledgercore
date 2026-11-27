@@ -80,10 +80,10 @@ public class Transfer {
         Objects.requireNonNull(toAccountId, "toAccountId must not be null");
         Objects.requireNonNull(currency, "currency must not be null");
         if (currency.length() != 3) {
-            throw new IllegalArgumentException("currency must be a 3-letter ISO code: " + currency);
+            throw new InvalidTransferRequestException("currency must be a 3-letter ISO code: " + currency);
         }
         if (fromAccountId.equals(toAccountId)) {
-            throw new IllegalArgumentException("fromAccountId and toAccountId must be distinct");
+            throw new InvalidTransferRequestException("fromAccountId and toAccountId must be distinct");
         }
 
         Transfer transfer = new Transfer();

@@ -1,6 +1,7 @@
 package com.ledgercore.api.controller;
 
 import com.ledgercore.api.IdempotencyKeyValidator;
+import com.ledgercore.api.IdempotencyScope;
 import com.ledgercore.api.dto.TransferRequest;
 import com.ledgercore.api.dto.TransferResponse;
 import com.ledgercore.api.filter.RequestIdFilter;
@@ -64,9 +65,10 @@ public class TransferController {
         ownershipPolicy.verifyTransferDestination(body.toAccountId());
 
         IdempotencyKeyValidator.validate(idempotencyKey);
+        String internalKey = IdempotencyScope.scope(caller.userId(), idempotencyKey);
 
         TransferCommand command = new TransferCommand(
-                idempotencyKey,
+                internalKey,
                 body.fromAccountId(),
                 body.toAccountId(),
                 body.amountMinor(),

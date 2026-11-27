@@ -144,7 +144,7 @@ class RestApiIntegrationTest {
     @DisplayName("Create account: 201 + Location + body")
     void createAccount_success() throws Exception {
         AuthTestHelper.TestUser user = authHelper.createCustomer("alice");
-        CreateAccountRequest req = new CreateAccountRequest("Alice", "USD", 0L);
+        CreateAccountRequest req = new CreateAccountRequest("USD", 0L);
         SimpleResponse res = postWithAuth("/api/v1/accounts", mapper.writeValueAsString(req), user.token());
 
         assertThat(res.status()).isEqualTo(201);
@@ -152,7 +152,7 @@ class RestApiIntegrationTest {
         assertThat(res.header("Location")).contains("/api/v1/accounts/");
 
         JsonNode json = res.json(mapper);
-        assertThat(json.get("ownerRef").asText()).isEqualTo("Alice");
+        assertThat(json.get("ownerRef").asText()).isEqualTo(user.id().toString());
         assertThat(json.get("currency").asText()).isEqualTo("USD");
         assertThat(json.get("balanceMinor").asLong()).isEqualTo(0L);
         assertThat(json.get("accountNumber").asText()).startsWith("ACC-");
@@ -162,7 +162,7 @@ class RestApiIntegrationTest {
     @DisplayName("Create account with initial deposit: 201 + balance reflected")
     void createAccount_withInitialDeposit() throws Exception {
         AuthTestHelper.TestUser admin = authHelper.createAdmin("bob-admin");
-        CreateAccountRequest req = new CreateAccountRequest("Bob", "USD", 5000L);
+        CreateAccountRequest req = new CreateAccountRequest("USD", 5000L);
         SimpleResponse res = postWithAuth("/api/v1/accounts", mapper.writeValueAsString(req), admin.token());
 
         assertThat(res.status()).isEqualTo(201);
@@ -174,7 +174,7 @@ class RestApiIntegrationTest {
     @DisplayName("Create account: invalid currency produces 400 naming the field")
     void createAccount_invalidCurrency() throws Exception {
         AuthTestHelper.TestUser user = authHelper.createCustomer("charlie");
-        CreateAccountRequest req = new CreateAccountRequest("Charlie", "US", 0L);
+        CreateAccountRequest req = new CreateAccountRequest("US", 0L);
         SimpleResponse res = postWithAuth("/api/v1/accounts", mapper.writeValueAsString(req), user.token());
 
         assertThat(res.status()).isEqualTo(400);
@@ -240,6 +240,7 @@ class RestApiIntegrationTest {
                 mapper.writeValueAsString(req), admin.token(), Map.of("Idempotency-Key", key));
         assertThat(res1.status()).isEqualTo(201);
         assertThat(res1.header("Idempotent-Replayed")).isNull();
+        assertThat(res1.json(mapper).get("fromAccountId").isNull()).isTrue();
         String transferId = res1.json(mapper).get("transferId").asText();
 
         // Replay with same key and body -> 201 + Idempotent-Replayed: true + same transferId

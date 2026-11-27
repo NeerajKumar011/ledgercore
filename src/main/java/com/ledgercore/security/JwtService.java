@@ -37,6 +37,7 @@ public class JwtService {
 
     public static final String ISSUER = "ledgercore";
     public static final String CLAIM_ROLE = "role";
+    public static final String CLAIM_TOKEN_VERSION = "ver";
 
     private final byte[] secretBytes;
     private final Duration tokenExpiration;
@@ -59,7 +60,7 @@ public class JwtService {
         this.secretBytes = bytes;
     }
 
-    public String generateToken(UUID userId, String role) {
+    public String generateToken(UUID userId, String role, int tokenVersion) {
         Objects.requireNonNull(userId, "userId must not be null");
         Objects.requireNonNull(role, "role must not be null");
 
@@ -72,6 +73,7 @@ public class JwtService {
                 .issueTime(Date.from(now))
                 .expirationTime(Date.from(exp))
                 .claim(CLAIM_ROLE, role)
+                .claim(CLAIM_TOKEN_VERSION, tokenVersion)
                 .jwtID(UUID.randomUUID().toString())
                 .build();
 
@@ -83,6 +85,10 @@ public class JwtService {
         } catch (Exception e) {
             throw new IllegalStateException("Failed to sign JWT token", e);
         }
+    }
+
+    public String generateToken(UUID userId, String role) {
+        return generateToken(userId, role, 0);
     }
 
     public Duration getTokenExpiration() {

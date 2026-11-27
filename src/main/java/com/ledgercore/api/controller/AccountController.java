@@ -5,6 +5,7 @@ import com.ledgercore.account.AccountQueryService;
 import com.ledgercore.account.AccountRepository;
 import com.ledgercore.account.AccountService;
 import com.ledgercore.api.IdempotencyKeyValidator;
+import com.ledgercore.api.IdempotencyScope;
 import com.ledgercore.api.dto.AccountListResponse;
 import com.ledgercore.api.dto.AccountResponse;
 import com.ledgercore.api.dto.CreateAccountRequest;
@@ -84,7 +85,7 @@ public class AccountController {
         }
 
         Account account = accountService.openAccount(
-                body.ownerRef() != null && !body.ownerRef().isBlank() ? body.ownerRef() : caller.userId().toString(),
+                caller.userId().toString(),
                 body.currency(),
                 body.initialDepositMinor(),
                 caller.userId()
@@ -149,8 +150,9 @@ public class AccountController {
         ownershipPolicy.verifyDepositAccess(account, caller, selfServiceDepositsEnabled);
 
         IdempotencyKeyValidator.validate(idempotencyKey);
+        String internalKey = IdempotencyScope.scope(caller.userId(), idempotencyKey);
 
-        TransferResult result = accountService.deposit(id, body.amountMinor(), idempotencyKey);
+        TransferResult result = accountService.deposit(id, body.amountMinor(), internalKey);
         return handleTransferResult(result, request);
     }
 

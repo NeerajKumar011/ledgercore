@@ -37,6 +37,15 @@ public class User {
     @Column(name = "enabled", nullable = false)
     private boolean enabled;
 
+    @Column(name = "token_version", nullable = false)
+    private int tokenVersion = 0;
+
+    @Column(name = "failed_login_count", nullable = false)
+    private int failedLoginCount = 0;
+
+    @Column(name = "locked_until")
+    private Instant lockedUntil;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -101,6 +110,38 @@ public class User {
 
     public void disable() {
         this.enabled = false;
+        this.updatedAt = Instant.now();
+    }
+
+    public void enable() {
+        this.enabled = true;
+        this.updatedAt = Instant.now();
+    }
+
+    public int getTokenVersion() {
+        return tokenVersion;
+    }
+
+    public void incrementTokenVersion() {
+        this.tokenVersion++;
+        this.updatedAt = Instant.now();
+    }
+
+    public int getFailedLoginCount() {
+        return failedLoginCount;
+    }
+
+    public Instant getLockedUntil() {
+        return lockedUntil;
+    }
+
+    public boolean isLocked(Instant now) {
+        return lockedUntil != null && lockedUntil.isAfter(now);
+    }
+
+    public void resetFailedLogin() {
+        this.failedLoginCount = 0;
+        this.lockedUntil = null;
         this.updatedAt = Instant.now();
     }
 

@@ -93,19 +93,22 @@ public class GlobalExceptionHandler {
         return toResponse(problem);
     }
 
+    @ExceptionHandler(InvalidRequestException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidRequest(InvalidRequestException ex, HttpServletRequest request) {
+        ProblemDetail problem = createProblemDetail(HttpStatus.BAD_REQUEST, "Invalid Request", ex.getMessage(), request);
+        return toResponse(problem);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ProblemDetail> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
-        ProblemDetail problem = createProblemDetail(HttpStatus.BAD_REQUEST, "Validation Failed", ex.getMessage(), request);
-        Map<String, String> errors = new LinkedHashMap<>();
-        if (ex.getMessage() != null && ex.getMessage().toLowerCase().contains("currency")) {
-            errors.put("currency", ex.getMessage());
-        }
-        if (ex.getMessage() != null && ex.getMessage().toLowerCase().contains("deposit")) {
-            errors.put("initialDepositMinor", ex.getMessage());
-        }
-        if (!errors.isEmpty()) {
-            problem.setProperty("errors", errors);
-        }
+        String requestId = getRequestId(request);
+        log.warn("Illegal argument encountered on {} [requestId={}]: {}",
+                request.getRequestURI(), requestId, ex.getMessage(), ex);
+        ProblemDetail problem = createProblemDetail(
+                HttpStatus.BAD_REQUEST,
+                "Invalid Request",
+                "The request contains invalid parameters.",
+                request);
         return toResponse(problem);
     }
 
@@ -153,6 +156,18 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(TransferNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleTransferNotFound(TransferNotFoundException ex, HttpServletRequest request) {
         ProblemDetail problem = createProblemDetail(HttpStatus.NOT_FOUND, "Transfer Not Found", ex.getMessage(), request);
+        return toResponse(problem);
+    }
+
+    @ExceptionHandler(com.ledgercore.user.UserNotFoundException.class)
+    public ResponseEntity<ProblemDetail> handleUserNotFound(com.ledgercore.user.UserNotFoundException ex, HttpServletRequest request) {
+        ProblemDetail problem = createProblemDetail(HttpStatus.NOT_FOUND, "User Not Found", ex.getMessage(), request);
+        return toResponse(problem);
+    }
+
+    @ExceptionHandler(PayloadTooLargeException.class)
+    public ResponseEntity<ProblemDetail> handlePayloadTooLarge(PayloadTooLargeException ex, HttpServletRequest request) {
+        ProblemDetail problem = createProblemDetail(HttpStatus.PAYLOAD_TOO_LARGE, "Payload Too Large", ex.getMessage(), request);
         return toResponse(problem);
     }
 

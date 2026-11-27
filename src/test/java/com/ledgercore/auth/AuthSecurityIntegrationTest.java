@@ -76,6 +76,26 @@ class AuthSecurityIntegrationTest {
     @Autowired
     private JwtService jwtService;
 
+    @Autowired
+    private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+
+    @Autowired
+    private com.ledgercore.auth.RefreshTokenRepository refreshTokenRepository;
+
+    @Autowired
+    private com.ledgercore.security.RateLimitingFilter rateLimitingFilter;
+
+    @org.junit.jupiter.api.BeforeEach
+    void setUp() {
+        rateLimitingFilter.clear();
+        rateLimitingFilter.setRegisterLimit(100);
+        rateLimitingFilter.setLoginLimit(100);
+        rateLimitingFilter.setRefreshLimit(100);
+    }
+
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();
@@ -242,39 +262,46 @@ class AuthSecurityIntegrationTest {
     @Test
     @DisplayName("Registration race: concurrent registration of identical email -> exactly 1 success, others 409")
     void register_concurrentRace() throws Exception {
-        String email = "race-" + UUID.randomUUID() + "@example.com";
-        RegisterRequest req = new RegisterRequest(email, "P@ssword123456");
-        String payload = mapper.writeValueAsString(req);
+        rateLimitingFilter.clear();
+        rateLimitingFilter.setRegisterLimit(50);
+        try {
+            String email = "race-" + UUID.randomUUID() + "@example.com";
+            RegisterRequest req = new RegisterRequest(email, "P@ssword123456");
+            String payload = mapper.writeValueAsString(req);
 
-        int concurrency = 10;
-        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
-        CountDownLatch startGate = new CountDownLatch(1);
-        List<Future<SimpleResponse>> futures = new ArrayList<>();
+            int concurrency = 10;
+            ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+            CountDownLatch startGate = new CountDownLatch(1);
+            List<Future<SimpleResponse>> futures = new ArrayList<>();
 
-        for (int i = 0; i < concurrency; i++) {
-            futures.add(executor.submit(() -> {
-                startGate.await();
-                return post("/api/v1/auth/register", payload, null);
-            }));
-        }
-
-        startGate.countDown();
-
-        int successes = 0;
-        int conflicts = 0;
-
-        for (Future<SimpleResponse> f : futures) {
-            SimpleResponse res = f.get(30, TimeUnit.SECONDS);
-            if (res.status() == 201) {
-                successes++;
-            } else if (res.status() == 409) {
-                conflicts++;
+            for (int i = 0; i < concurrency; i++) {
+                futures.add(executor.submit(() -> {
+                    startGate.await();
+                    return post("/api/v1/auth/register", payload, null);
+                }));
             }
-        }
-        executor.shutdown();
 
-        assertThat(successes).isEqualTo(1);
-        assertThat(conflicts).isEqualTo(concurrency - 1);
+            startGate.countDown();
+
+            int successes = 0;
+            int conflicts = 0;
+
+            for (Future<SimpleResponse> f : futures) {
+                SimpleResponse res = f.get(30, TimeUnit.SECONDS);
+                if (res.status() == 201) {
+                    successes++;
+                } else if (res.status() == 409) {
+                    conflicts++;
+                }
+            }
+            executor.shutdown();
+
+            assertThat(successes).isEqualTo(1);
+            assertThat(conflicts).isEqualTo(concurrency - 1);
+        } finally {
+            rateLimitingFilter.setRegisterLimit(5);
+            rateLimitingFilter.clear();
+        }
     }
 
     // =========================================================================
@@ -630,5 +657,193 @@ class AuthSecurityIntegrationTest {
 
         assertThat(resp.headers().firstValue("Access-Control-Allow-Origin")).isEmpty();
         assertThat(resp.headers().firstValue("Access-Control-Allow-Credentials")).isEmpty();
+    }
+
+    // =========================================================================
+    // 8. Per-User Idempotency Scoping
+    // =========================================================================
+
+    @Test
+    @DisplayName("Idempotency: User A and User B can use identical client key without conflict; replay and conflict scoped per user")
+    void idempotency_perUserScoping() throws Exception {
+        AuthTestHelper.TestUser userA = authHelper.createCustomer("idem-user-a");
+        AuthTestHelper.TestUser userB = authHelper.createCustomer("idem-user-b");
+
+        Account a1 = accountService.openAccount("A1", "USD", 5000L, userA.id());
+        Account a2 = accountService.openAccount("A2", "USD", 0L, userA.id());
+
+        Account b1 = accountService.openAccount("B1", "USD", 5000L, userB.id());
+        Account b2 = accountService.openAccount("B2", "USD", 0L, userB.id());
+
+        String sharedClientKey = "SHARED-CLIENT-KEY-" + UUID.randomUUID();
+
+        // User A transfers $10 with sharedClientKey -> 201 Created
+        TransferRequest reqA = new TransferRequest(a1.getId(), a2.getId(), 1000L, "USD");
+        SimpleResponse resA = postWithAuth("/api/v1/transfers", mapper.writeValueAsString(reqA),
+                userA.token(), Map.of("Idempotency-Key", sharedClientKey));
+        assertThat(resA.status()).isEqualTo(201);
+        String txIdA = resA.json(mapper).get("transferId").asText();
+
+        // User B transfers $20 with SAME sharedClientKey -> 201 Created (no collision/409!)
+        TransferRequest reqB = new TransferRequest(b1.getId(), b2.getId(), 2000L, "USD");
+        SimpleResponse resB = postWithAuth("/api/v1/transfers", mapper.writeValueAsString(reqB),
+                userB.token(), Map.of("Idempotency-Key", sharedClientKey));
+        assertThat(resB.status()).isEqualTo(201);
+        String txIdB = resB.json(mapper).get("transferId").asText();
+        assertThat(txIdB).isNotEqualTo(txIdA);
+
+        // User A replays SAME client key + same payload -> 201 + Idempotent-Replayed: true
+        SimpleResponse replayA = postWithAuth("/api/v1/transfers", mapper.writeValueAsString(reqA),
+                userA.token(), Map.of("Idempotency-Key", sharedClientKey));
+        assertThat(replayA.status()).isEqualTo(201);
+        assertThat(replayA.header("Idempotent-Replayed")).isEqualTo("true");
+        assertThat(replayA.json(mapper).get("transferId").asText()).isEqualTo(txIdA);
+
+        // User A sends SAME client key + DIFFERENT payload -> 409 Conflict
+        TransferRequest conflictReqA = new TransferRequest(a1.getId(), a2.getId(), 3000L, "USD");
+        SimpleResponse conflictA = postWithAuth("/api/v1/transfers", mapper.writeValueAsString(conflictReqA),
+                userA.token(), Map.of("Idempotency-Key", sharedClientKey));
+        assertThat(conflictA.status()).isEqualTo(409);
+
+        // Admin deposit with SAME client key -> 201 Created (no conflict with customer's key)
+        AuthTestHelper.TestUser admin = authHelper.createAdmin("dep-idem-admin");
+        DepositRequest depReq = new DepositRequest(500L);
+        SimpleResponse depRes = postWithAuth("/api/v1/accounts/" + a2.getId() + "/deposits",
+                mapper.writeValueAsString(depReq), admin.token(), Map.of("Idempotency-Key", sharedClientKey));
+        assertThat(depRes.status()).isEqualTo(201);
+    }
+
+    // =========================================================================
+    // 9. Account Creation ownerRef Stripping
+    // =========================================================================
+
+    @Test
+    @DisplayName("Create account: ownerRef in body is ignored, account owner is always caller userId")
+    void createAccount_ownerRefInBodyIgnored() throws Exception {
+        AuthTestHelper.TestUser user = authHelper.createCustomer("spoof-tester");
+        String body = "{\"ownerRef\":\"malicious-spoofed-owner\",\"currency\":\"USD\",\"initialDepositMinor\":0}";
+
+        SimpleResponse res = postWithAuth("/api/v1/accounts", body, user.token());
+        assertThat(res.status()).isEqualTo(201);
+
+        JsonNode json = res.json(mapper);
+        assertThat(json.get("ownerRef").asText()).isEqualTo(user.id().toString());
+        assertThat(json.get("ownerRef").asText()).isNotEqualTo("malicious-spoofed-owner");
+
+        UUID accountId = UUID.fromString(json.get("id").asText());
+        Account acc = accountRepository.findById(accountId).orElseThrow();
+        assertThat(acc.getOwnerRef()).isEqualTo(user.id().toString());
+        assertThat(acc.getOwnerUserId()).isEqualTo(user.id());
+    }
+
+    // =========================================================================
+    // 10. BCrypt Transaction Isolation
+    // =========================================================================
+
+    @Test
+    @DisplayName("BCrypt: encode() and matches() are executed outside of database transactions")
+    void bcrypt_executedOutsideTransactions() {
+        java.util.concurrent.atomic.AtomicBoolean encodeInsideTx = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.atomic.AtomicBoolean matchesInsideTx = new java.util.concurrent.atomic.AtomicBoolean(true);
+
+        org.springframework.security.crypto.password.PasswordEncoder trackingEncoder =
+                new org.springframework.security.crypto.password.PasswordEncoder() {
+                    @Override
+                    public String encode(CharSequence rawPassword) {
+                        encodeInsideTx.set(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+                        return passwordEncoder.encode(rawPassword);
+                    }
+
+                    @Override
+                    public boolean matches(CharSequence rawPassword, String encodedPassword) {
+                        matchesInsideTx.set(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+                        return passwordEncoder.matches(rawPassword, encodedPassword);
+                    }
+                };
+
+        AuthService service = new AuthService(userRepository, refreshTokenRepository, trackingEncoder, jwtService, transactionTemplate);
+
+        String email = "tx-iso-" + UUID.randomUUID() + "@example.com";
+        service.register(new RegisterRequest(email, "SuperSecurePassword123!"));
+        assertThat(encodeInsideTx.get()).isFalse();
+
+        service.login(new LoginRequest(email, "SuperSecurePassword123!"));
+        assertThat(matchesInsideTx.get()).isFalse();
+    }
+
+    // =========================================================================
+    // 11. Error Sanitization (IllegalArgumentException)
+    // =========================================================================
+
+    @Test
+    @DisplayName("Error sanitization: IllegalArgumentException returns generic 400 and does NOT leak detail")
+    void error_illegalArgumentDoesNotLeakDetail() throws Exception {
+        AuthTestHelper.TestUser user = authHelper.createCustomer("err-tester");
+
+        SimpleResponse res = getWithAuth("/api/v1/test-error/illegal-argument", user.token());
+        assertThat(res.status()).isEqualTo(400);
+
+        JsonNode problem = res.json(mapper);
+        assertThat(problem.get("title").asText()).isEqualTo("Invalid Request");
+        assertThat(problem.get("detail").asText()).isEqualTo("The request contains invalid parameters.");
+        assertThat(res.body()).doesNotContain("sensitive-internal-detail");
+    }
+
+    // =========================================================================
+    // 12. Password Max Length (256 chars)
+    // =========================================================================
+
+    @Test
+    @DisplayName("Password length: passwords exceeding 256 characters rejected at validation layer with 400")
+    void password_exceeding256CharsRejected() throws Exception {
+        String longPassword = "A".repeat(257);
+
+        // Register with oversized password -> 400 Validation Failed
+        String regBody = mapper.writeValueAsString(new RegisterRequest("oversized-reg@example.com", longPassword));
+        SimpleResponse regRes = post("/api/v1/auth/register", regBody, null);
+        assertThat(regRes.status()).isEqualTo(400);
+        JsonNode regJson = regRes.json(mapper);
+        assertThat(regJson.get("title").asText()).isEqualTo("Validation Failed");
+        assertThat(regJson.get("errors").has("password")).isTrue();
+
+        // Login with oversized password -> 400 Validation Failed
+        String loginBody = mapper.writeValueAsString(new LoginRequest("oversized-login@example.com", longPassword));
+        SimpleResponse loginRes = post("/api/v1/auth/login", loginBody, null);
+        assertThat(loginRes.status()).isEqualTo(400);
+        JsonNode loginJson = loginRes.json(mapper);
+        assertThat(loginJson.get("title").asText()).isEqualTo("Validation Failed");
+        assertThat(loginJson.get("errors").has("password")).isTrue();
+    }
+
+    // =========================================================================
+    // 13. System Account Concealment in TransferResponse
+    // =========================================================================
+
+    @Test
+    @DisplayName("Concealment: SYSTEM account ID is nulled in TransferResponse for deposits")
+    void concealment_systemAccountIdNulledInTransferResponse() throws Exception {
+        AuthTestHelper.TestUser customer = authHelper.createCustomer("sys-conceal-cust");
+        AuthTestHelper.TestUser admin = authHelper.createAdmin("sys-conceal-admin");
+
+        Account custAcc = accountService.openAccount("CustAcc", "USD", 0L, customer.id());
+
+        // Admin makes a deposit into customer's account
+        DepositRequest req = new DepositRequest(2500L);
+        SimpleResponse depRes = postWithAuth("/api/v1/accounts/" + custAcc.getId() + "/deposits",
+                mapper.writeValueAsString(req), admin.token(), Map.of("Idempotency-Key", uniqueKey()));
+        assertThat(depRes.status()).isEqualTo(201);
+
+        JsonNode depJson = depRes.json(mapper);
+        assertThat(depJson.get("fromAccountId").isNull()).isTrue();
+        assertThat(depJson.get("toAccountId").asText()).isEqualTo(custAcc.getId().toString());
+        String transferId = depJson.get("transferId").asText();
+
+        // Customer retrieves transfer details -> fromAccountId is still null (concealed)
+        SimpleResponse txRes = getWithAuth("/api/v1/transfers/" + transferId, customer.token());
+        assertThat(txRes.status()).isEqualTo(200);
+
+        JsonNode txJson = txRes.json(mapper);
+        assertThat(txJson.get("fromAccountId").isNull()).isTrue();
+        assertThat(txJson.get("toAccountId").asText()).isEqualTo(custAcc.getId().toString());
     }
 }

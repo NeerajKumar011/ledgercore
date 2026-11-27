@@ -1,6 +1,7 @@
 package com.ledgercore.account;
 
 import com.ledgercore.transfer.AccountNotFoundException;
+import com.ledgercore.api.error.InvalidRequestException;
 import com.ledgercore.transfer.TransferCommand;
 import com.ledgercore.transfer.TransferResult;
 import com.ledgercore.transfer.TransferService;
@@ -88,7 +89,7 @@ public class AccountService {
         Objects.requireNonNull(ownerRef, "ownerRef must not be null");
         Objects.requireNonNull(currency, "currency must not be null");
         if (initialDepositMinor < 0) {
-            throw new IllegalArgumentException("initialDepositMinor cannot be negative: " + initialDepositMinor);
+            throw new InvalidRequestException("initialDepositMinor cannot be negative: " + initialDepositMinor);
         }
 
         Account account = Account.create(accountNumber, ownerRef, currency, ownerUserId);
