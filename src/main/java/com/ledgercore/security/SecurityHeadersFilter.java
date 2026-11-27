@@ -1,0 +1,42 @@
+package com.ledgercore.security;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+
+/**
+ * Enforces baseline security response headers on all HTTP responses:
+ * - X-Content-Type-Options: nosniff
+ * - Cache-Control: no-store for /api/**
+ * - Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+ * - Referrer-Policy: no-referrer
+ * - X-Frame-Options: DENY
+ */
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE + 1)
+public class SecurityHeadersFilter extends OncePerRequestFilter {
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain) throws ServletException, IOException {
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+        response.setHeader("Referrer-Policy", "no-referrer");
+        response.setHeader("X-Frame-Options", "DENY");
+
+        String uri = request.getRequestURI();
+        if (uri != null && uri.startsWith("/api/")) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}

@@ -1,6 +1,7 @@
 package com.ledgercore.account;
 
 import com.ledgercore.transfer.AccountNotFoundException;
+import com.ledgercore.api.error.InvalidRequestException;
 import com.ledgercore.transfer.TransferCommand;
 import com.ledgercore.transfer.TransferResult;
 import com.ledgercore.transfer.TransferService;
@@ -68,22 +69,30 @@ public class AccountService {
      * Opens a new CUSTOMER account with a generated account number and optional initial deposit.
      */
     public Account openAccount(String ownerRef, String currency, long initialDepositMinor) {
+        return openAccount(ownerRef, currency, initialDepositMinor, null);
+    }
+
+    public Account openAccount(String ownerRef, String currency, long initialDepositMinor, UUID ownerUserId) {
         String accountNumber = "ACC-" + UUID.randomUUID();
-        return openAccount(accountNumber, ownerRef, currency, initialDepositMinor);
+        return openAccount(accountNumber, ownerRef, currency, initialDepositMinor, ownerUserId);
     }
 
     /**
      * Opens a new CUSTOMER account with a specific account number and optional initial deposit.
      */
     public Account openAccount(String accountNumber, String ownerRef, String currency, long initialDepositMinor) {
+        return openAccount(accountNumber, ownerRef, currency, initialDepositMinor, null);
+    }
+
+    public Account openAccount(String accountNumber, String ownerRef, String currency, long initialDepositMinor, UUID ownerUserId) {
         Objects.requireNonNull(accountNumber, "accountNumber must not be null");
         Objects.requireNonNull(ownerRef, "ownerRef must not be null");
         Objects.requireNonNull(currency, "currency must not be null");
         if (initialDepositMinor < 0) {
-            throw new IllegalArgumentException("initialDepositMinor cannot be negative: " + initialDepositMinor);
+            throw new InvalidRequestException("initialDepositMinor cannot be negative: " + initialDepositMinor);
         }
 
-        Account account = Account.create(accountNumber, ownerRef, currency);
+        Account account = Account.create(accountNumber, ownerRef, currency, ownerUserId);
         Account saved = accountRepository.saveAndFlush(account);
 
         if (initialDepositMinor > 0) {

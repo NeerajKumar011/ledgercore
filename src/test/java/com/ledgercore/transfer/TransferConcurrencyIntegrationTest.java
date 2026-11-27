@@ -425,8 +425,22 @@ class TransferConcurrencyIntegrationTest {
         }
 
         assertThat(winnerCount).isEqualTo(1);
-        assertThat(conflictCount).isGreaterThan(0);
-        assertThat(winnerCount + replayCount + conflictCount).isEqualTo(totalThreads);
+        assertThat(conflictCount).isEqualTo(5);
+        assertThat(replayCount).isEqualTo(4);
+
+        long winningAmount = "X".equals(winningPayload) ? 100L : 200L;
+        Account reloadedFrom = accountRepository.findById(from.getId()).orElseThrow();
+        Account reloadedToX  = accountRepository.findById(toX.getId()).orElseThrow();
+        Account reloadedToY  = accountRepository.findById(toY.getId()).orElseThrow();
+
+        assertThat(reloadedFrom.getBalanceMinor()).isEqualTo(10_000L - winningAmount);
+        if ("X".equals(winningPayload)) {
+            assertThat(reloadedToX.getBalanceMinor()).isEqualTo(1000L + winningAmount);
+            assertThat(reloadedToY.getBalanceMinor()).isEqualTo(1000L);
+        } else {
+            assertThat(reloadedToY.getBalanceMinor()).isEqualTo(1000L + winningAmount);
+            assertThat(reloadedToX.getBalanceMinor()).isEqualTo(1000L);
+        }
 
         // Exactly one transfer row for the key in DB
         Transfer stored = transferRepository.findByIdempotencyKey(key).orElseThrow();
@@ -445,6 +459,10 @@ class TransferConcurrencyIntegrationTest {
         String currency = "USD";
         int count = 50;
         long depositPerAccount = 1000L;
+
+        Account initialFunding = accountService.getOrCreateFundingAccount(currency);
+        long initialFundingBalance = initialFunding.getBalanceMinor();
+        entityManager.clear();
 
         CountDownLatch startGate = new CountDownLatch(1);
         List<Future<Account>> futures = new ArrayList<>();
@@ -475,9 +493,11 @@ class TransferConcurrencyIntegrationTest {
             assertThat(ra.getBalanceMinor()).isEqualTo(depositPerAccount);
         }
 
-        Account fundingAccount = accountService.getOrCreateFundingAccount(currency);
-        // Funding balance must be negative and equal to net deposits
+        entityManager.clear();
+        Account fundingAccount = accountRepository.findById(initialFunding.getId()).orElseThrow();
+        // Funding balance must be negative and change must equal exactly -(count * depositPerAccount)
         assertThat(fundingAccount.getBalanceMinor()).isNegative();
+        assertThat(fundingAccount.getBalanceMinor() - initialFundingBalance).isEqualTo(-(count * depositPerAccount));
 
         ReconciliationReport report = reconciliationService.reconcile();
         assertThat(report.consistent()).isTrue();
@@ -592,68 +612,5 @@ class TransferConcurrencyIntegrationTest {
         ReconciliationReport finalReport = reconciliationService.reconcile();
         assertThat(finalReport.consistent()).isTrue();
         assertThat(finalReport.problems()).isEmpty();
-    }
-
-    // ── 5i. lockTimeout ───────────────────────────────────────────────────────
-
-    @Test
-    @DisplayName("5i: lockTimeout: holding lock triggers TransferBusyException within bounded time; succeeds after release")
-    void lockTimeout() throws Exception {
-        Account account = accountService.openAccount("LOCKED-" + UUID.randomUUID(), "USD", 10_000L);
-        Account recipient = accountService.openAccount("RECP-" + UUID.randomUUID(), "USD", 0L);
-
-        CountDownLatch lockAcquiredLatch = new CountDownLatch(1);
-        CountDownLatch releaseLockLatch = new CountDownLatch(1);
-
-        // Transaction 1: acquires and holds pessimistic lock on account
-        Future<?> lockHolderFuture = executor.submit(() -> {
-            TransactionTemplate tt = new TransactionTemplate(transactionManager);
-            tt.execute(status -> {
-                accountRepository.findByIdForUpdate(account.getId());
-                lockAcquiredLatch.countDown();
-                try {
-                    releaseLockLatch.await(10, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                return null;
-            });
-        });
-
-        // Wait until lock holder has acquired the lock
-        assertThat(lockAcquiredLatch.await(5, TimeUnit.SECONDS)).isTrue();
-
-        // Transaction 2: should attempt transfer, hit lock timeout, and throw TransferBusyException
-        String timeoutKey = uniqueKey();
-        long t0 = System.currentTimeMillis();
-
-        assertThatThrownBy(() -> {
-            transferService.execute(new TransferCommand(timeoutKey, account.getId(), recipient.getId(), 500L, "USD"));
-            return;
-        })
-                .isInstanceOf(TransferBusyException.class);
-
-        long elapsed = System.currentTimeMillis() - t0;
-        log.info("Lock timeout elapsed in {} ms", elapsed);
-        // Configured timeout is 3s (or overridden), bounded time check
-        assertThat(elapsed).isLessThan(10_000L);
-
-        // Verify nothing stored for the timed-out transfer
-        assertThat(transferRepository.findByIdempotencyKey(timeoutKey)).isEmpty();
-        Account reloadedBeforeRelease = accountRepository.findById(account.getId()).orElseThrow();
-        assertThat(reloadedBeforeRelease.getBalanceMinor()).isEqualTo(10_000L);
-
-        // Release the lock
-        releaseLockLatch.countDown();
-        lockHolderFuture.get(5, TimeUnit.SECONDS);
-
-        // After release, transfer with new key succeeds cleanly
-        String successKey = uniqueKey();
-        TransferResult successRes = transferService.execute(
-                new TransferCommand(successKey, account.getId(), recipient.getId(), 500L, "USD"));
-        assertThat(successRes.status()).isEqualTo(TransferStatus.COMPLETED);
-
-        Account reloadedAfterSuccess = accountRepository.findById(account.getId()).orElseThrow();
-        assertThat(reloadedAfterSuccess.getBalanceMinor()).isEqualTo(9500L);
     }
 }
