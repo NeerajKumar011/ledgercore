@@ -54,14 +54,36 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
             BoundedRequestWrapper wrappedRequest = new BoundedRequestWrapper(request, MAX_BODY_BYTES);
             try {
                 filterChain.doFilter(wrappedRequest, response);
-            } catch (PayloadTooLargeException e) {
-                if (!response.isCommitted()) {
-                    send413(request, response);
+            } catch (Exception e) {
+                if (hasPayloadTooLargeCause(e)) {
+                    if (!response.isCommitted()) {
+                        send413(request, response);
+                        return;
+                    }
+                }
+                if (e instanceof ServletException se) {
+                    throw se;
+                } else if (e instanceof IOException ioe) {
+                    throw ioe;
+                } else if (e instanceof RuntimeException re) {
+                    throw re;
+                } else {
+                    throw new ServletException(e);
                 }
             }
         } else {
             filterChain.doFilter(request, response);
         }
+    }
+
+    private static boolean hasPayloadTooLargeCause(Throwable t) {
+        while (t != null) {
+            if (t instanceof PayloadTooLargeException) {
+                return true;
+            }
+            t = t.getCause();
+        }
+        return false;
     }
 
     private void send413(HttpServletRequest request, HttpServletResponse response) throws IOException {

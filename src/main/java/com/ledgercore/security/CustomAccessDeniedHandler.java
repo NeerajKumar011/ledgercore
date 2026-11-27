@@ -24,6 +24,9 @@ public class CustomAccessDeniedHandler implements AccessDeniedHandler {
 
     private final ObjectMapper objectMapper;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.ledgercore.audit.AuditService auditService;
+
     public CustomAccessDeniedHandler(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
@@ -35,6 +38,28 @@ public class CustomAccessDeniedHandler implements AccessDeniedHandler {
         String requestId = (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE);
         if (requestId == null) {
             requestId = MDC.get(RequestIdFilter.REQUEST_ID_MDC_KEY);
+        }
+
+        if (auditService != null) {
+            java.util.UUID actorUserId = null;
+            String actorRole = null;
+            org.springframework.security.core.Authentication auth =
+                    org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getPrincipal() instanceof org.springframework.security.oauth2.jwt.Jwt jwt) {
+                try {
+                    actorUserId = java.util.UUID.fromString(jwt.getSubject());
+                    actorRole = jwt.getClaimAsString("role");
+                } catch (Exception ignored) {}
+            }
+            auditService.recordAuth(
+                    "ACCESS_DENIED",
+                    "DENIED",
+                    actorUserId,
+                    actorRole,
+                    "ENDPOINT",
+                    request.getRequestURI(),
+                    null
+            );
         }
 
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(

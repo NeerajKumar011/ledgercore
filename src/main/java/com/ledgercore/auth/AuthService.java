@@ -46,6 +46,9 @@ public class AuthService {
     private final Duration refreshTokenTtl;
     private final String dummyHash;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.ledgercore.audit.AuditService auditService;
+
     @org.springframework.beans.factory.annotation.Autowired
     public AuthService(UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository,
@@ -88,17 +91,36 @@ public class AuthService {
         String passwordHash = passwordEncoder.encode(request.password());
 
         // 2. Short, scoped database transaction to check and persist user
-        User saved = transactionTemplate.execute(status -> {
-            if (userRepository.findByEmailIgnoreCase(normalizedEmail).isPresent()) {
-                throw new EmailAlreadyExistsException("Email already registered: " + normalizedEmail);
+        User saved;
+        try {
+            saved = transactionTemplate.execute(status -> {
+                if (userRepository.findByEmailIgnoreCase(normalizedEmail).isPresent()) {
+                    throw new EmailAlreadyExistsException("Email already registered: " + normalizedEmail);
+                }
+                User user = User.createCustomer(normalizedEmail, passwordHash);
+                try {
+                    return userRepository.saveAndFlush(user);
+                } catch (DataIntegrityViolationException ex) {
+                    throw new EmailAlreadyExistsException("Email already registered: " + normalizedEmail);
+                }
+            });
+        } catch (EmailAlreadyExistsException e) {
+            if (auditService != null) {
+                auditService.recordAuth(
+                        "REGISTER", "FAILURE", null, null,
+                        "USER", com.ledgercore.audit.AuditCanonicalizer.hashIdentifier16(normalizedEmail),
+                        "{\"reason\":\"DUPLICATE_EMAIL\"}"
+                );
             }
-            User user = User.createCustomer(normalizedEmail, passwordHash);
-            try {
-                return userRepository.saveAndFlush(user);
-            } catch (DataIntegrityViolationException ex) {
-                throw new EmailAlreadyExistsException("Email already registered: " + normalizedEmail);
-            }
-        });
+            throw e;
+        }
+
+        if (auditService != null) {
+            auditService.recordAuth(
+                    "REGISTER", "SUCCESS", saved.getId(), saved.getRole().name(),
+                    "USER", saved.getId().toString(), null
+            );
+        }
 
         return new RegisterResponse(saved.getId(), saved.getEmail(), saved.getRole().name());
     }
@@ -115,7 +137,16 @@ public class AuthService {
 
             // Check if locked: run dummy BCrypt for timing parity and reject without revealing lock state
             if (user.isLocked(now)) {
+                transactionTemplate.executeWithoutResult(status -> {
+                    userRepository.recordLoginFailure(user.getId(), now);
+                });
                 passwordEncoder.matches(request.password(), dummyHash);
+                if (auditService != null) {
+                    auditService.recordAuth(
+                            "LOGIN_FAILURE", "FAILURE", user.getId(), user.getRole().name(),
+                            "USER", user.getId().toString(), "{\"reason\":\"LOCKED\"}"
+                    );
+                }
                 throw new BadCredentialsException("Invalid email or password");
             }
 
@@ -127,15 +158,27 @@ public class AuthService {
                 transactionTemplate.executeWithoutResult(status -> {
                     userRepository.recordLoginFailure(user.getId(), now);
                 });
+                if (auditService != null) {
+                    auditService.recordAuth(
+                            "LOGIN_FAILURE", "FAILURE", user.getId(), user.getRole().name(),
+                            "USER", user.getId().toString(), "{\"reason\":\"BAD_CREDENTIALS\"}"
+                    );
+                }
                 throw new BadCredentialsException("Invalid email or password");
             }
 
             if (!user.isEnabled()) {
+                if (auditService != null) {
+                    auditService.recordAuth(
+                            "LOGIN_FAILURE", "FAILURE", user.getId(), user.getRole().name(),
+                            "USER", user.getId().toString(), "{\"reason\":\"DISABLED\"}"
+                    );
+                }
                 throw new BadCredentialsException("Invalid email or password");
             }
 
             // 3. Reset lockout counters and issue access + refresh tokens
-            return transactionTemplate.execute(status -> {
+            AuthResponse response = transactionTemplate.execute(status -> {
                 userRepository.resetLoginLockout(user.getId(), now);
 
                 String accessToken = jwtService.generateToken(user.getId(), user.getRole().name(), user.getTokenVersion());
@@ -157,9 +200,25 @@ public class AuthService {
 
                 return AuthResponse.of(accessToken, jwtService.getTokenExpiration().toSeconds(), rawRefreshToken, refreshTokenTtl.toSeconds());
             });
+
+            if (auditService != null) {
+                auditService.recordAuth(
+                        "LOGIN_SUCCESS", "SUCCESS", user.getId(), user.getRole().name(),
+                        "USER", user.getId().toString(), null
+                );
+            }
+
+            return response;
         } else {
             // Mitigate timing leakage by running BCrypt against dummy hash outside transaction
             passwordEncoder.matches(request.password(), dummyHash);
+            if (auditService != null) {
+                auditService.recordAuth(
+                        "LOGIN_FAILURE", "FAILURE", null, null,
+                        "USER", com.ledgercore.audit.AuditCanonicalizer.hashIdentifier16(normalizedEmail),
+                        "{\"reason\":\"BAD_CREDENTIALS\"}"
+                );
+            }
             throw new BadCredentialsException("Invalid email or password");
         }
     }
@@ -174,7 +233,7 @@ public class AuthService {
         );
 
         if (updated == 1) {
-            return transactionTemplate.execute(status -> {
+            AuthResponse response = transactionTemplate.execute(status -> {
                 RefreshToken oldToken = refreshTokenRepository.findByTokenHash(tokenHash)
                         .orElseThrow(() -> new BadCredentialsException("Invalid or revoked refresh token"));
 
@@ -207,6 +266,18 @@ public class AuthService {
 
                 return AuthResponse.of(accessToken, jwtService.getTokenExpiration().toSeconds(), newRawRefreshToken, refreshTokenTtl.toSeconds());
             });
+
+            if (auditService != null) {
+                RefreshToken token = refreshTokenRepository.findByTokenHash(tokenHash).orElse(null);
+                UUID familyId = (token != null) ? token.getFamilyId() : null;
+                auditService.recordAuth(
+                        "REFRESH_SUCCESS", "SUCCESS",
+                        token != null ? token.getUserId() : null, null,
+                        "REFRESH_TOKEN", familyId != null ? familyId.toString() : null, null
+                );
+            }
+
+            return response;
         } else {
             // If token exists and was already used or revoked: reuse detected -> revoke family
             // Must be committed in a separate transaction so that throwing BadCredentialsException does not roll it back
@@ -216,6 +287,14 @@ public class AuthService {
                     RefreshToken token = existing.get();
                     if (token.getUsedAt() != null || token.getRevokedAt() != null) {
                         refreshTokenRepository.revokeFamily(token.getFamilyId(), now);
+                        if (auditService != null) {
+                            auditService.recordAuth(
+                                    "REFRESH_REUSE_DETECTED", "FAILURE",
+                                    token.getUserId(), null,
+                                    "REFRESH_TOKEN", token.getFamilyId().toString(),
+                                    "{\"reason\":\"REUSE_DETECTED\"}"
+                            );
+                        }
                     }
                 }
             });
@@ -233,6 +312,13 @@ public class AuthService {
         transactionTemplate.executeWithoutResult(status -> {
             refreshTokenRepository.findByTokenHash(tokenHash).ifPresent(token -> {
                 refreshTokenRepository.revokeFamily(token.getFamilyId(), now);
+                if (auditService != null) {
+                    auditService.recordAuth(
+                            "LOGOUT", "SUCCESS",
+                            token.getUserId(), null,
+                            "REFRESH_TOKEN", token.getFamilyId().toString(), null
+                    );
+                }
             });
         });
     }
@@ -244,6 +330,13 @@ public class AuthService {
         transactionTemplate.executeWithoutResult(status -> {
             refreshTokenRepository.revokeAllForUser(userId, now);
             userRepository.incrementTokenVersion(userId, now);
+            if (auditService != null) {
+                auditService.recordAuth(
+                        "LOGOUT_ALL", "SUCCESS",
+                        userId, null,
+                        "USER", userId.toString(), null
+                );
+            }
         });
     }
 
@@ -259,10 +352,21 @@ public class AuthService {
                     .orElseThrow(() -> new UserNotFoundException(targetUserId));
             userRepository.disableUser(targetUserId, now);
             refreshTokenRepository.revokeAllForUser(targetUserId, now);
+            if (auditService != null) {
+                auditService.recordAdmin(
+                        "USER_DISABLED", "SUCCESS",
+                        caller.userId(), caller.role(),
+                        "USER", targetUserId.toString(), null
+                );
+            }
         });
     }
 
     public void enableUser(UUID targetUserId) {
+        enableUser(targetUserId, null);
+    }
+
+    public void enableUser(UUID targetUserId, AuthenticatedUser caller) {
         Objects.requireNonNull(targetUserId, "targetUserId must not be null");
         Instant now = clock.instant();
 
@@ -270,6 +374,14 @@ public class AuthService {
             User user = userRepository.findById(targetUserId)
                     .orElseThrow(() -> new UserNotFoundException(targetUserId));
             userRepository.enableUser(targetUserId, now);
+            if (auditService != null) {
+                auditService.recordAdmin(
+                        "USER_ENABLED", "SUCCESS",
+                        caller != null ? caller.userId() : null,
+                        caller != null ? caller.role() : null,
+                        "USER", targetUserId.toString(), null
+                );
+            }
         });
     }
 }

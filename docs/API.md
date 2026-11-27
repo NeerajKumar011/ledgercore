@@ -156,6 +156,128 @@ Content-Type: application/json
 
 ---
 
+## 6. Audit Log & Integrity Verification (Phase 4C)
+
+All audit endpoints require `ROLE_ADMIN`.
+
+### 1. Verify Cryptographic Audit Chain
+`GET /api/v1/admin/audit/verify` (Admin Only)
+
+Streams the entire audit log, re-calculating canonical SHA-256 hashes and validating hash chaining (`prev_hash == previous.row_hash` and `seq == previous.seq + 1`). Executes within a `REPEATABLE READ` transaction.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/verify HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK` - Valid Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": true,
+  "verifiedCount": 154,
+  "headSeq": 154,
+  "headHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "firstSeq": 1,
+  "firstHash": "8a31b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2",
+  "verificationDurationMs": 28
+}
+```
+
+**Response (`200 OK` - Tampered Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": false,
+  "verifiedCount": 50,
+  "headSeq": 154,
+  "headHash": "...",
+  "failureSeq": 51,
+  "failureId": "550e8400-e29b-41d4-a716-446655440000",
+  "failureReason": "ROW_HASH_MISMATCH: computed hash does not match stored row_hash",
+  "expectedHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "actualHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "verificationDurationMs": 12
+}
+```
+
+---
+
+### 2. Get Audit Head
+`GET /api/v1/admin/audit/head` (Admin Only)
+
+Retrieves the latest audit event's sequence and hash for comparison against off-site external anchors.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/head HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "seq": 154,
+  "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+  "occurredAt": "2026-11-28T00:15:30.123456Z",
+  "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+}
+```
+
+---
+
+### 3. Query Audit Events
+`GET /api/v1/admin/audit` (Admin Only)
+
+Queries audit log records with optional filtering and keyset pagination.
+
+**Query Parameters:**
+- `actorUserId` (`UUID`, optional): Filter by actor user ID.
+- `action` (`String`, optional): Filter by action (e.g. `LOGIN_FAILURE`, `TRANSFER_MADE`, `USER_DISABLED`).
+- `outcome` (`String`, optional): `SUCCESS` or `FAILURE`.
+- `from` (`Instant`, optional): ISO-8601 UTC timestamp start.
+- `to` (`Instant`, optional): ISO-8601 UTC timestamp end.
+- `limit` (`int`, optional, default 50, max 200): Maximum records to return.
+- `seqAfter` (`Long`, optional): Return records with `seq > seqAfter`.
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "seq": 154,
+    "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+    "occurredAt": "2026-11-28T00:15:30.123456Z",
+    "actorUserId": "550e8400-e29b-41d4-a716-446655440000",
+    "actorRole": "ADMIN",
+    "action": "USER_DISABLED",
+    "outcome": "SUCCESS",
+    "targetType": "USER",
+    "targetId": "660e8400-e29b-41d4-a716-446655440000",
+    "requestId": "91b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "clientIp": "127.0.0.1",
+    "details": {
+      "disabledUserId": "660e8400-e29b-41d4-a716-446655440000"
+    },
+    "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+    "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+  }
+]
+```
+
+---
+
 ### 5. Logout All Sessions
 `POST /api/v1/auth/logout-all` (Authenticated)
 
@@ -170,6 +292,128 @@ Authorization: Bearer <jwt-token>
 ```
 
 **Response (`204 No Content`)**
+
+---
+
+## 6. Audit Log & Integrity Verification (Phase 4C)
+
+All audit endpoints require `ROLE_ADMIN`.
+
+### 1. Verify Cryptographic Audit Chain
+`GET /api/v1/admin/audit/verify` (Admin Only)
+
+Streams the entire audit log, re-calculating canonical SHA-256 hashes and validating hash chaining (`prev_hash == previous.row_hash` and `seq == previous.seq + 1`). Executes within a `REPEATABLE READ` transaction.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/verify HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK` - Valid Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": true,
+  "verifiedCount": 154,
+  "headSeq": 154,
+  "headHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "firstSeq": 1,
+  "firstHash": "8a31b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2",
+  "verificationDurationMs": 28
+}
+```
+
+**Response (`200 OK` - Tampered Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": false,
+  "verifiedCount": 50,
+  "headSeq": 154,
+  "headHash": "...",
+  "failureSeq": 51,
+  "failureId": "550e8400-e29b-41d4-a716-446655440000",
+  "failureReason": "ROW_HASH_MISMATCH: computed hash does not match stored row_hash",
+  "expectedHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "actualHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "verificationDurationMs": 12
+}
+```
+
+---
+
+### 2. Get Audit Head
+`GET /api/v1/admin/audit/head` (Admin Only)
+
+Retrieves the latest audit event's sequence and hash for comparison against off-site external anchors.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/head HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "seq": 154,
+  "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+  "occurredAt": "2026-11-28T00:15:30.123456Z",
+  "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+}
+```
+
+---
+
+### 3. Query Audit Events
+`GET /api/v1/admin/audit` (Admin Only)
+
+Queries audit log records with optional filtering and keyset pagination.
+
+**Query Parameters:**
+- `actorUserId` (`UUID`, optional): Filter by actor user ID.
+- `action` (`String`, optional): Filter by action (e.g. `LOGIN_FAILURE`, `TRANSFER_MADE`, `USER_DISABLED`).
+- `outcome` (`String`, optional): `SUCCESS` or `FAILURE`.
+- `from` (`Instant`, optional): ISO-8601 UTC timestamp start.
+- `to` (`Instant`, optional): ISO-8601 UTC timestamp end.
+- `limit` (`int`, optional, default 50, max 200): Maximum records to return.
+- `seqAfter` (`Long`, optional): Return records with `seq > seqAfter`.
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "seq": 154,
+    "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+    "occurredAt": "2026-11-28T00:15:30.123456Z",
+    "actorUserId": "550e8400-e29b-41d4-a716-446655440000",
+    "actorRole": "ADMIN",
+    "action": "USER_DISABLED",
+    "outcome": "SUCCESS",
+    "targetType": "USER",
+    "targetId": "660e8400-e29b-41d4-a716-446655440000",
+    "requestId": "91b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "clientIp": "127.0.0.1",
+    "details": {
+      "disabledUserId": "660e8400-e29b-41d4-a716-446655440000"
+    },
+    "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+    "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+  }
+]
+```
 
 ---
 
@@ -373,9 +617,376 @@ Disables the target user account, revokes all outstanding refresh tokens, and in
 
 ---
 
+## 6. Audit Log & Integrity Verification (Phase 4C)
+
+All audit endpoints require `ROLE_ADMIN`.
+
+### 1. Verify Cryptographic Audit Chain
+`GET /api/v1/admin/audit/verify` (Admin Only)
+
+Streams the entire audit log, re-calculating canonical SHA-256 hashes and validating hash chaining (`prev_hash == previous.row_hash` and `seq == previous.seq + 1`). Executes within a `REPEATABLE READ` transaction.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/verify HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK` - Valid Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": true,
+  "verifiedCount": 154,
+  "headSeq": 154,
+  "headHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "firstSeq": 1,
+  "firstHash": "8a31b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2",
+  "verificationDurationMs": 28
+}
+```
+
+**Response (`200 OK` - Tampered Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": false,
+  "verifiedCount": 50,
+  "headSeq": 154,
+  "headHash": "...",
+  "failureSeq": 51,
+  "failureId": "550e8400-e29b-41d4-a716-446655440000",
+  "failureReason": "ROW_HASH_MISMATCH: computed hash does not match stored row_hash",
+  "expectedHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "actualHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "verificationDurationMs": 12
+}
+```
+
+---
+
+### 2. Get Audit Head
+`GET /api/v1/admin/audit/head` (Admin Only)
+
+Retrieves the latest audit event's sequence and hash for comparison against off-site external anchors.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/head HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "seq": 154,
+  "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+  "occurredAt": "2026-11-28T00:15:30.123456Z",
+  "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+}
+```
+
+---
+
+### 3. Query Audit Events
+`GET /api/v1/admin/audit` (Admin Only)
+
+Queries audit log records with optional filtering and keyset pagination.
+
+**Query Parameters:**
+- `actorUserId` (`UUID`, optional): Filter by actor user ID.
+- `action` (`String`, optional): Filter by action (e.g. `LOGIN_FAILURE`, `TRANSFER_MADE`, `USER_DISABLED`).
+- `outcome` (`String`, optional): `SUCCESS` or `FAILURE`.
+- `from` (`Instant`, optional): ISO-8601 UTC timestamp start.
+- `to` (`Instant`, optional): ISO-8601 UTC timestamp end.
+- `limit` (`int`, optional, default 50, max 200): Maximum records to return.
+- `seqAfter` (`Long`, optional): Return records with `seq > seqAfter`.
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "seq": 154,
+    "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+    "occurredAt": "2026-11-28T00:15:30.123456Z",
+    "actorUserId": "550e8400-e29b-41d4-a716-446655440000",
+    "actorRole": "ADMIN",
+    "action": "USER_DISABLED",
+    "outcome": "SUCCESS",
+    "targetType": "USER",
+    "targetId": "660e8400-e29b-41d4-a716-446655440000",
+    "requestId": "91b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "clientIp": "127.0.0.1",
+    "details": {
+      "disabledUserId": "660e8400-e29b-41d4-a716-446655440000"
+    },
+    "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+    "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+  }
+]
+```
+
+---
+
 ### 3. Enable User Account
 `POST /api/v1/admin/users/{id}/enable` (Admin Only)
 
 Re-enables a previously disabled user account, allowing login. Non-existent user returns `404 Not Found`.
 
 **Response (`204 No Content`)**
+
+
+---
+
+## 6. Audit Log & Integrity Verification (Phase 4C)
+
+All audit endpoints require `ROLE_ADMIN`.
+
+### 1. Verify Cryptographic Audit Chain
+`GET /api/v1/admin/audit/verify` (Admin Only)
+
+Streams the entire audit log, re-calculating canonical SHA-256 hashes and validating hash chaining (`prev_hash == previous.row_hash` and `seq == previous.seq + 1`). Executes within a `REPEATABLE READ` transaction.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/verify HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK` - Valid Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": true,
+  "verifiedCount": 154,
+  "headSeq": 154,
+  "headHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "firstSeq": 1,
+  "firstHash": "8a31b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2",
+  "verificationDurationMs": 28
+}
+```
+
+**Response (`200 OK` - Tampered Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": false,
+  "verifiedCount": 50,
+  "headSeq": 154,
+  "headHash": "...",
+  "failureSeq": 51,
+  "failureId": "550e8400-e29b-41d4-a716-446655440000",
+  "failureReason": "ROW_HASH_MISMATCH: computed hash does not match stored row_hash",
+  "expectedHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "actualHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "verificationDurationMs": 12
+}
+```
+
+---
+
+### 2. Get Audit Head
+`GET /api/v1/admin/audit/head` (Admin Only)
+
+Retrieves the latest audit event's sequence and hash for comparison against off-site external anchors.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/head HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "seq": 154,
+  "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+  "occurredAt": "2026-11-28T00:15:30.123456Z",
+  "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+}
+```
+
+---
+
+### 3. Query Audit Events
+`GET /api/v1/admin/audit` (Admin Only)
+
+Queries audit log records with optional filtering and keyset pagination.
+
+**Query Parameters:**
+- `actorUserId` (`UUID`, optional): Filter by actor user ID.
+- `action` (`String`, optional): Filter by action (e.g. `LOGIN_FAILURE`, `TRANSFER_MADE`, `USER_DISABLED`).
+- `outcome` (`String`, optional): `SUCCESS` or `FAILURE`.
+- `from` (`Instant`, optional): ISO-8601 UTC timestamp start.
+- `to` (`Instant`, optional): ISO-8601 UTC timestamp end.
+- `limit` (`int`, optional, default 50, max 200): Maximum records to return.
+- `seqAfter` (`Long`, optional): Return records with `seq > seqAfter`.
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "seq": 154,
+    "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+    "occurredAt": "2026-11-28T00:15:30.123456Z",
+    "actorUserId": "550e8400-e29b-41d4-a716-446655440000",
+    "actorRole": "ADMIN",
+    "action": "USER_DISABLED",
+    "outcome": "SUCCESS",
+    "targetType": "USER",
+    "targetId": "660e8400-e29b-41d4-a716-446655440000",
+    "requestId": "91b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "clientIp": "127.0.0.1",
+    "details": {
+      "disabledUserId": "660e8400-e29b-41d4-a716-446655440000"
+    },
+    "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+    "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+  }
+]
+```
+
+---
+
+## 6. Audit Log & Integrity Verification (Phase 4C)
+
+All audit endpoints require `ROLE_ADMIN`.
+
+### 1. Verify Cryptographic Audit Chain
+`GET /api/v1/admin/audit/verify` (Admin Only)
+
+Streams the entire audit log, re-calculating canonical SHA-256 hashes and validating hash chaining (`prev_hash == previous.row_hash` and `seq == previous.seq + 1`). Executes within a `REPEATABLE READ` transaction.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/verify HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK` - Valid Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": true,
+  "verifiedCount": 154,
+  "headSeq": 154,
+  "headHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "firstSeq": 1,
+  "firstHash": "8a31b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2",
+  "verificationDurationMs": 28
+}
+```
+
+**Response (`200 OK` - Tampered Chain):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "valid": false,
+  "verifiedCount": 50,
+  "headSeq": 154,
+  "headHash": "...",
+  "failureSeq": 51,
+  "failureId": "550e8400-e29b-41d4-a716-446655440000",
+  "failureReason": "ROW_HASH_MISMATCH: computed hash does not match stored row_hash",
+  "expectedHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "actualHash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "verificationDurationMs": 12
+}
+```
+
+---
+
+### 2. Get Audit Head
+`GET /api/v1/admin/audit/head` (Admin Only)
+
+Retrieves the latest audit event's sequence and hash for comparison against off-site external anchors.
+
+**Request:**
+```http
+GET /api/v1/admin/audit/head HTTP/1.1
+Authorization: Bearer <ADMIN_JWT>
+```
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "seq": 154,
+  "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+  "occurredAt": "2026-11-28T00:15:30.123456Z",
+  "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+  "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+}
+```
+
+---
+
+### 3. Query Audit Events
+`GET /api/v1/admin/audit` (Admin Only)
+
+Queries audit log records with optional filtering and keyset pagination.
+
+**Query Parameters:**
+- `actorUserId` (`UUID`, optional): Filter by actor user ID.
+- `action` (`String`, optional): Filter by action (e.g. `LOGIN_FAILURE`, `TRANSFER_MADE`, `USER_DISABLED`).
+- `outcome` (`String`, optional): `SUCCESS` or `FAILURE`.
+- `from` (`Instant`, optional): ISO-8601 UTC timestamp start.
+- `to` (`Instant`, optional): ISO-8601 UTC timestamp end.
+- `limit` (`int`, optional, default 50, max 200): Maximum records to return.
+- `seqAfter` (`Long`, optional): Return records with `seq > seqAfter`.
+
+**Response (`200 OK`):**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  {
+    "seq": 154,
+    "id": "78e1ab7d-943e-4e65-8a90-c328f5d3e17f",
+    "occurredAt": "2026-11-28T00:15:30.123456Z",
+    "actorUserId": "550e8400-e29b-41d4-a716-446655440000",
+    "actorRole": "ADMIN",
+    "action": "USER_DISABLED",
+    "outcome": "SUCCESS",
+    "targetType": "USER",
+    "targetId": "660e8400-e29b-41d4-a716-446655440000",
+    "requestId": "91b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "clientIp": "127.0.0.1",
+    "details": {
+      "disabledUserId": "660e8400-e29b-41d4-a716-446655440000"
+    },
+    "prevHash": "c1a345e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78",
+    "rowHash": "d2b456e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+  }
+]
+```

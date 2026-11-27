@@ -33,8 +33,9 @@ public class AdminUserController {
     }
 
     @PostMapping("/{id}/enable")
-    public ResponseEntity<Void> enableUser(@PathVariable UUID id) {
-        authService.enableUser(id);
+    public ResponseEntity<Void> enableUser(@PathVariable UUID id, Authentication authentication) {
+        AuthenticatedUser caller = AuthenticatedUser.from(authentication);
+        authService.enableUser(id, caller);
         return ResponseEntity.noContent().build();
     }
 }

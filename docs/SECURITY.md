@@ -99,15 +99,39 @@ The filter chain executes defensive filters in strict priority order before any 
 
 ---
 
-## 2. STRIDE Threat Model
+### 1.5 Tamper-Evident Cryptographic Audit Log (Phase 4C)
+
+- **Cryptographic Hash Chaining**:
+  - Every event is recorded in `audit_events` with an incremental 64-bit sequence number (`seq`).
+  - Sequence numbers are strictly serialized using a PostgreSQL transactional advisory lock (`pg_advisory_xact_lock(8492049102941029384)`), preventing gaps or race conditions under high concurrency.
+  - Each row stores `prev_hash` equal to the preceding row's `row_hash`. Genesis record (`seq = 1`) uses 64 hexadecimal zeros (`0000...0000`).
+  - Canonical format for hash computation:
+    `seq|id|occurred_at_micros|actor_user_id|actor_role|action|outcome|target_type|target_id|request_id|client_ip|canonical_details_json|prev_hash`
+  - All JSON object keys in `details` are recursively sorted lexicographically.
+  - Timestamps are truncated to microsecond precision (`ChronoUnit.MICROS`) to guarantee exact bit-for-bit parity with PostgreSQL `timestamptz`.
+- **Database Engine Immutability Triggers**:
+  - `audit_events_prevent_update_or_delete`: Rejects any `UPDATE` or `DELETE` attempt at row level.
+  - `audit_events_prevent_truncate`: Rejects `TRUNCATE` at statement level.
+- **Fail-Closed vs. Fail-Open Audit Recording**:
+  - Critical admin mutations (user disable/enable, reconciliation) use `AuditService.recordAdmin(...)` with `Propagation.REQUIRED` (fail-closed): if the audit log insertion fails, the administrative action rolls back.
+  - Authentication and customer requests use `AuditService.recordAuth(...)` with `Propagation.REQUIRES_NEW` (fail-open): an audit logging error does not block legitimate user authentication or transactions.
+- **Audit Verification Endpoint**:
+  - `GET /api/v1/admin/audit/verify` streams records using keyset pagination (`WHERE seq > :cursor ORDER BY seq ASC LIMIT :batchSize`) within a single `REPEATABLE READ` read-only transaction, re-computing canonical SHA-256 hashes without loading large volumes into memory.
+  - Detects modified rows, hash forgery, sequence gaps, deleted rows, and spliced entries.
+- **Threat Model: What Hash Chaining Detects vs. Does NOT Detect**:
+  - *Detects*: Row mutation, row deletion, row insertion, hash forgery, and internal corruption.
+  - *Does NOT detect on its own*: Tail truncation (deleting the most recent $N$ records) or entire table recreation if done by a database superuser.
+  - *Mitigation*: External anchoring (publishing head hash to an immutable off-site location).
+
+---
 
 | Threat | Threat Category | Implemented Countermeasure |
 | :--- | :--- | :--- |
 | **Spoofing** | Attacker impersonates a valid user | HS256 JWT signature verification with 256-bit secret. Unsigned or `alg:none` tokens rejected. Strict issuer (`ledgercore`) and zero clock skew timestamp validation. Account creation ignores client-provided `ownerRef` and strictly assigns caller userId. Fast DB lookup verifies user is enabled and matches `token_version`. |
 | **Tampering** | Attacker modifies JWT payload, replay, or token theft | Cryptographic signature verification fails immediately on altered claims. Idempotency keys are SHA-256 scoped with caller userId. Refresh tokens use family-based rotation; reuse of an old token triggers theft detection and invalidates the entire family. |
-| **Repudiation** | User denies initiating a transfer or deposit | Double-entry journal entries are immutable (enforced by DB triggers and non-updatable entities). Every request is assigned a UUID `X-Request-Id` logged in MDC. |
+| **Repudiation** | User denies initiating a transfer, deposit, or administrative action | Cryptographic tamper-evident audit log with hash-chained SHA-256 records (`audit_events`). Double-entry journal entries are immutable (enforced by DB triggers and non-updatable entities). Every request is assigned a UUID `X-Request-Id` logged in MDC and stored in audit records. |
 | **Information Disclosure** | Leakage of account existence, passwords, secrets, or system internals | Passwords never returned. Refresh tokens stored only as SHA-256 hashes. Database port bound to loopback `127.0.0.1`. App secrets (`JWT_SECRET`, admin credentials) excluded from DB container environment. Non-owned and SYSTEM accounts concealed via 404; SYSTEM account IDs nulled in `TransferResponse`. Generic RFC 9457 ProblemDetails sanitize stack traces and SQL errors. Timing parity protects locked accounts and non-existent users. |
-| **Denial of Service** | Resource exhaustion via huge payloads, brute force, or connection starvation | Request bodies capped at 16 KB (413). In-memory IP rate limiter throttles auth endpoints before BCrypt. Progressive lockout doubles delay up to 60m. Passwords capped at 256 chars / 72 UTF-8 bytes. BCrypt hashing/matching executed outside DB transactions to prevent connection starvation. Transfer locks use account ID ordering and strict 5-second database timeouts. |
+| **Denial of Service** | Resource exhaustion via huge payloads, brute force, or connection starvation | Request bodies capped at 16 KB (413). In-memory IP rate limiter throttles auth endpoints before BCrypt. Progressive lockout doubles delay up to 60m. Passwords capped at 256 chars / 72 UTF-8 bytes. BCrypt hashing/matching executed outside DB transactions to prevent connection starvation. Transfer locks use account ID ordering and strict 3-second database timeouts. |
 | **Elevation of Privilege** | Customer accesses admin or peer endpoints | URL authorization enforces `ROLE_ADMIN` on `/api/v1/admin/**`. Service-layer `AccountOwnershipPolicy` enforces caller ownership on all account operations. Dynamic JWT converter queries DB role on every request, immediately reflecting role promotions or demotions. |
 
 ---
@@ -118,9 +142,15 @@ The filter chain executes defensive filters in strict priority order before any 
 2. **Reverse Proxy Notes for `X-Forwarded-For` (XFF)**:
    - LedgerCore's in-memory rate limiter deliberately inspects `request.getRemoteAddr()` and **ignores `X-Forwarded-For`** to prevent spoofing by untrusted clients.
    - When deploying behind a trusted reverse proxy, the proxy must be configured with `proxy_protocol` or Spring Boot's `server.forward-headers-strategy=native` (or `framework`) with a strictly configured internal proxy subnet (`server.tomcat.remoteip.internal-proxies`), ensuring `getRemoteAddr()` resolves to the verified client IP.
-3. **Environment Secrets**:
+3. **Production Database Role Least-Privilege**:
+   - The application database user (`ledger_user`) must have only `CONNECT`, `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on needed tables, and execute privileges on sequences.
+   - The database role must **NOT** be a `SUPERUSER`, must **NOT** have `CREATEROLE`, and must **NOT** own the `audit_events` or `ledger_entries` tables in production.
+   - Without table ownership or superuser rights, the application user cannot execute `ALTER TABLE audit_events DISABLE TRIGGER ...` or bypass immutability triggers.
+4. **External Anchoring Requirement**:
+   - To protect against tail truncation (deleting recent audit records) or unauthorized database restores, the log head (`seq` and `row_hash` retrieved via `GET /api/v1/admin/audit/head`) must be periodically anchored to an off-site, immutable write-once-read-many (WORM) storage service (e.g. AWS S3 Object Lock in Compliance Mode, Git commit tag, or public timestamping authority).
+5. **Environment Secrets**:
    - `JWT_SECRET`: Must be a cryptographically secure random string with at least 32 bytes of entropy.
    - `ADMIN_EMAIL` & `ADMIN_PASSWORD`: Used by `AdminBootstrapService` to provision the initial administrator account. Must be kept confidential and rotated.
-4. **Remaining Gaps & Future Roadmap**:
+6. **Remaining Gaps & Future Roadmap**:
    - **Distributed Rate Limiting (Redis)**: The current rate limiter is in-memory and bounded per instance. Multi-node horizontal scaling requires a distributed shared cache (e.g. Redis / Token Bucket).
-   - **Audit Log Sink**: Security events (lockouts, family theft detections, admin disable actions) are logged via SLF4J MDC. A dedicated append-only SIEM / audit sink is recommended for enterprise compliance.
+   - **Automated External Log Ship**: Direct automated shipping of audit events to an external SIEM / log aggregator.

@@ -20,6 +20,9 @@ public class AdminController {
 
     private final ReconciliationService reconciliationService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.ledgercore.audit.AuditService auditService;
+
     public AdminController(ReconciliationService reconciliationService) {
         this.reconciliationService = reconciliationService;
     }
@@ -28,8 +31,20 @@ public class AdminController {
      * 7. Reconciles all accounts, currencies, and transfers across the double-entry ledger.
      */
     @GetMapping("/reconciliation")
-    public ResponseEntity<ReconciliationReport> reconcile() {
+    public ResponseEntity<ReconciliationReport> reconcile(org.springframework.security.core.Authentication authentication) {
         ReconciliationReport report = reconciliationService.reconcile();
+        if (auditService != null) {
+            com.ledgercore.security.AuthenticatedUser caller = (authentication != null) ? com.ledgercore.security.AuthenticatedUser.from(authentication) : null;
+            auditService.recordAdmin(
+                    "RECONCILIATION_RUN",
+                    "SUCCESS",
+                    caller != null ? caller.userId() : null,
+                    caller != null ? caller.role() : null,
+                    "SYSTEM",
+                    "RECONCILIATION",
+                    "{\"consistent\":" + report.consistent() + "}"
+            );
+        }
         return ResponseEntity.ok(report);
     }
 }

@@ -114,6 +114,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ProblemDetail> handleNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        Throwable cause = ex.getCause();
+        while (cause != null) {
+            if (cause instanceof PayloadTooLargeException pte) {
+                return handlePayloadTooLarge(pte, request);
+            }
+            cause = cause.getCause();
+        }
         ProblemDetail problem = createProblemDetail(HttpStatus.BAD_REQUEST, "Malformed JSON",
                 "Request body is malformed or unreadable", request);
         return toResponse(problem);

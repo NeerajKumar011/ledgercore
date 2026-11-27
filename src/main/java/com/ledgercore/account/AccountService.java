@@ -24,6 +24,9 @@ public class AccountService {
     private final TransferService   transferService;
     private final EntityManager     entityManager;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.ledgercore.audit.AuditService auditService;
+
     public AccountService(AccountRepository accountRepository,
                           TransferService transferService,
                           EntityManager entityManager) {
@@ -95,6 +98,18 @@ public class AccountService {
         Account account = Account.create(accountNumber, ownerRef, currency, ownerUserId);
         Account saved = accountRepository.saveAndFlush(account);
 
+        if (auditService != null) {
+            auditService.recordAdmin(
+                    "ACCOUNT_OPENED",
+                    "SUCCESS",
+                    ownerUserId,
+                    null,
+                    "ACCOUNT",
+                    saved.getId().toString(),
+                    "{\"currency\":\"" + currency + "\"}"
+            );
+        }
+
         if (initialDepositMinor > 0) {
             String depositKey = "OPEN-DEP-" + saved.getId();
             UUID savedId = saved.getId();
@@ -133,6 +148,18 @@ public class AccountService {
                 amountMinor,
                 currency);
 
-        return transferService.executeFunding(command);
+        TransferResult result = transferService.executeFunding(command);
+        if (auditService != null) {
+            auditService.recordAdmin(
+                    "DEPOSIT_MADE",
+                    "SUCCESS",
+                    null,
+                    null,
+                    "ACCOUNT",
+                    accountId.toString(),
+                    "{\"amountMinor\":" + amountMinor + ",\"currency\":\"" + currency + "\"}"
+            );
+        }
+        return result;
     }
 }

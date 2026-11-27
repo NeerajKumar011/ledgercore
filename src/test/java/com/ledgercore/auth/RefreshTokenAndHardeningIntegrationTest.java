@@ -562,4 +562,125 @@ class RefreshTokenAndHardeningIntegrationTest {
             assertThat(tokenHash.trim()).isNotEqualTo(rawRefreshToken);
         }
     }
+
+    // =========================================================================
+    // 9. Hardening: Delay Doubling, Secret-Free Logs, Chunked 413, Multi-IP Limiting
+    // =========================================================================
+
+    @Test
+    @DisplayName("Lockout: duration doubles with each subsequent failure up to 60 minutes")
+    void lockout_delayDoublingPerFailure() throws Exception {
+        AuthTestHelper.TestUser user = authHelper.createCustomer("double-lockout-user");
+        String wrongBody = mapper.writeValueAsString(new LoginRequest(user.email(), "WrongPass!"));
+
+        // 5 failures -> locks for 1 min (60s)
+        for (int i = 0; i < 5; i++) {
+            post("/api/v1/auth/login", wrongBody, null);
+        }
+        User u5 = userRepository.findById(user.id()).orElseThrow();
+        long diff5 = Duration.between(clock.instant(), u5.getLockedUntil()).toSeconds();
+        assertThat(diff5).isBetween(50L, 70L);
+
+        // 6th failure -> locks for 2 min (120s)
+        post("/api/v1/auth/login", wrongBody, null);
+        User u6 = userRepository.findById(user.id()).orElseThrow();
+        long diff6 = Duration.between(clock.instant(), u6.getLockedUntil()).toSeconds();
+        assertThat(diff6).isBetween(110L, 130L);
+
+        // 7th failure -> locks for 4 min (240s)
+        post("/api/v1/auth/login", wrongBody, null);
+        User u7 = userRepository.findById(user.id()).orElseThrow();
+        long diff7 = Duration.between(clock.instant(), u7.getLockedUntil()).toSeconds();
+        assertThat(diff7).isBetween(230L, 250L);
+    }
+
+    @Test
+    @DisplayName("Logging hygiene: log events NEVER contain tokens, passwords or secrets")
+    void logs_containNoTokensOrSecrets() throws Exception {
+        ch.qos.logback.classic.Logger rootLogger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender = new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        rootLogger.addAppender(appender);
+
+        String secretPass = "SuperSecretUnloggedPassword123!";
+        try {
+            // Register
+            String email = "log-hygiene-" + UUID.randomUUID() + "@example.com";
+            SimpleResponse regRes = post("/api/v1/auth/register", mapper.writeValueAsString(new RegisterRequest(email, secretPass)), null);
+            assertThat(regRes.status()).isEqualTo(201);
+
+            // Login
+            SimpleResponse loginRes = post("/api/v1/auth/login", mapper.writeValueAsString(new LoginRequest(email, secretPass)), null);
+            assertThat(loginRes.status()).isEqualTo(200);
+            JsonNode loginJson = loginRes.json(mapper);
+            String rawAccessToken = loginJson.get("accessToken").asText();
+            String rawRefreshToken = loginJson.get("refreshToken").asText();
+
+            // Refresh
+            SimpleResponse refRes = post("/api/v1/auth/refresh", mapper.writeValueAsString(new RefreshTokenRequest(rawRefreshToken)), null);
+            assertThat(refRes.status()).isEqualTo(200);
+            String rotatedRefreshToken = refRes.json(mapper).get("refreshToken").asText();
+
+            // Inspect all captured log events
+            for (ch.qos.logback.classic.spi.ILoggingEvent event : appender.list) {
+                String formatted = event.getFormattedMessage();
+                assertThat(formatted).doesNotContain(secretPass);
+                assertThat(formatted).doesNotContain(rawAccessToken);
+                assertThat(formatted).doesNotContain(rawRefreshToken);
+                assertThat(formatted).doesNotContain(rotatedRefreshToken);
+            }
+        } finally {
+            rootLogger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    @DisplayName("Request size: chunked transfer encoding streaming over 16 KB returns 413 without buffering")
+    void requestSizeLimit_chunkedStreamOver16KBReturns413() throws Exception {
+        // Stream of 20 KB data sent via chunked encoding (without declared Content-Length)
+        byte[] oversizedData = ("{\"email\":\"chunked@example.com\",\"password\":\"" + "A".repeat(20 * 1024) + "\"}").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/auth/login"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofInputStream(() -> new java.io.ByteArrayInputStream(oversizedData)))
+                .build();
+
+        HttpResponse<String> resp = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        assertThat(resp.statusCode()).isEqualTo(413);
+
+        JsonNode problem = mapper.readTree(resp.body());
+        assertThat(problem.get("title").asText()).isEqualTo("Payload Too Large");
+        assertThat(problem.get("detail").asText()).contains("16384 bytes");
+    }
+
+    @Test
+    @DisplayName("Rate limiter: distinct remote IP addresses maintain isolated, separate rate limit buckets")
+    void rateLimiting_separateBucketsForDifferentRemoteAddresses() throws Exception {
+        rateLimitingFilter.clear();
+        rateLimitingFilter.setLoginLimit(3);
+
+        // 3 requests from IP 192.168.1.1 -> all pass
+        for (int i = 0; i < 3; i++) {
+            org.springframework.mock.web.MockHttpServletRequest req = new org.springframework.mock.web.MockHttpServletRequest("POST", "/api/v1/auth/login");
+            req.setRemoteAddr("192.168.1.1");
+            org.springframework.mock.web.MockHttpServletResponse res = new org.springframework.mock.web.MockHttpServletResponse();
+            rateLimitingFilter.doFilter(req, res, new org.springframework.mock.web.MockFilterChain());
+            assertThat(res.getStatus()).isEqualTo(200);
+        }
+
+        // 4th request from IP 192.168.1.1 -> 429
+        org.springframework.mock.web.MockHttpServletRequest reqIp1Blocked = new org.springframework.mock.web.MockHttpServletRequest("POST", "/api/v1/auth/login");
+        reqIp1Blocked.setRemoteAddr("192.168.1.1");
+        org.springframework.mock.web.MockHttpServletResponse resIp1Blocked = new org.springframework.mock.web.MockHttpServletResponse();
+        rateLimitingFilter.doFilter(reqIp1Blocked, resIp1Blocked, new org.springframework.mock.web.MockFilterChain());
+        assertThat(resIp1Blocked.getStatus()).isEqualTo(429);
+
+        // Meanwhile, IP 10.0.0.2 is in a separate bucket -> passes cleanly with 200
+        org.springframework.mock.web.MockHttpServletRequest reqIp2 = new org.springframework.mock.web.MockHttpServletRequest("POST", "/api/v1/auth/login");
+        reqIp2.setRemoteAddr("10.0.0.2");
+        org.springframework.mock.web.MockHttpServletResponse resIp2 = new org.springframework.mock.web.MockHttpServletResponse();
+        rateLimitingFilter.doFilter(reqIp2, resIp2, new org.springframework.mock.web.MockFilterChain());
+        assertThat(resIp2.getStatus()).isEqualTo(200);
+    }
 }

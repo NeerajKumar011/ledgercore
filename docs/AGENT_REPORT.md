@@ -1,338 +1,38 @@
 # LedgerCore Agent Report
 
 ## Current status
-- **Phase / step:** Phase 4A-FIX — Security Defects Remediated & Hardened
-- **Overall:** DONE
-- **Last updated:** 2026-11-25T22:15 IST
-- **One-line summary:** Phase 4A-FIX completed: docker-compose loopback binding & DB container least-privilege env vars verified; per-user idempotency key SHA-256 scoping implemented; ownerRef removed from CreateAccountRequest; BCrypt executed outside DB transactions; IllegalArgumentException sanitized in GlobalExceptionHandler; SYSTEM account UUIDs concealed in TransferResponse; @Size(max = 256) password bounds enforced; 6 new security tests added; 136 total tests passing with 0 failures, 0 errors; V1-V5 migration immutability verified.
-
----
+Phase 4, Step C (Tamper-Evident Audit Log, Hash Chaining & Hardening) COMPLETED & VERIFIED.
+All 169 tests passing (0 failures, 0 errors). V1-V6 untouched. Immutability verified.
 
 ## Open issues
-
-| # | Issue | Exact error | Cause | Status |
-|---|-------|-------------|-------|--------|
-| 1 | Two Maven repos HTTP 401 warnings (non-fatal) | `Could not transfer metadata from flyway-community-db-support ... HTTP Status: 401` | Pre-configured repos in local Maven settings without credentials; Flyway community drivers are not needed | **NOTE** — non-fatal warnings during Maven sync |
-| 2 | Host port 5432 occupied by Windows PostgreSQL service | `psql: error: connection to server at "127.0.0.1", port 5432 failed: FATAL: role "ledger_user" does not exist` | Host machine has a pre-existing native Windows PostgreSQL service (`postgresql-x64-18`) on port 5432 | **RESOLVED** — set `DB_PORT=5433` in `.env`; `docker-compose.yml` maps `${DB_PORT:-5432}:5432` and `application.properties` connects via `${DB_PORT}` |
-| 3 | Host port 8080 occupied by Apache HTTP server | `Web server failed to start. Port 8080 was already in use.` | Host machine has an active `httpd` process on port 8080 | **RESOLVED** — set `server.port=8081` in `application.properties` |
-| 4 | Bounded lock wait on pessimistic locking | `55P03: canceling statement due to lock timeout` | Under high contention or deadlocks, pessimistic locking would block indefinitely without a transaction-level lock timeout | **RESOLVED** — configured via `ledgercore.transfer.lock-timeout` (default `3s`), applied per-transaction via `SELECT set_config('lock_timeout', :timeout, true)`, and translated from SQLSTATE `55P03` to `TransferBusyException` |
-
----
+None.
 
 ## Manual actions needed from the human
-None! All 136 unit and integration tests are passing cleanly across all 13 test classes (0 failures, 0 errors, 0 skipped).
-
----
+Review changes on branch `phase-4c-audit` and commit.
 
 ## Log
 
 ### Phases 0-1 summary — Verification, Database Setup & Domain Foundation (2026-11-14)
-
-- **Status:** COMPLETED & COMMITTED
-- **Tool Versions Verified:**
-  - Java: OpenJDK 25.0.4.1 (Temurin-25.0.4.1+1)
-  - Compiler: javac 25.0.4.1
-  - Build Tool: Apache Maven Wrapper 3.10.0
-  - Git: git version 2.49.0.windows.1
-  - Docker Engine: Docker 29.8.0 / 29.9.3, Docker Compose v5.5.1
-  - Framework: Spring Boot 4.1.2 GA, Hibernate ORM 7.4.13.Final, PostgreSQL 18.7
-- **Key Infrastructure & Port Decisions:**
-  - **Docker Engine Migration to D:** Host C: drive ran out of disk space (~14MB free), causing containerd to mount read-only. Human freed 2.59GB on C: and reinstalled Docker Desktop to `D:\Docker`.
-  - **Port 5433 for PostgreSQL:** Host machine has native Windows PostgreSQL 18 service (`postgresql-x64-18`) on port 5432 where role `ledger_user` does not exist. Set `DB_PORT=5433` in `.env` and mapped `${DB_PORT:-5432}:5432` in `docker-compose.yml`.
-  - **Port 8081 for Spring Boot:** Host machine runs Apache `httpd` on port 8080. Added `server.port=8081` in `application.properties`.
-  - **UTC Timezone Enforcement:** The PostgreSQL JDBC driver transmits the host JVM timezone to PostgreSQL during connection handshake. The host JVM reported `"Asia/Calcutta"` which PostgreSQL rejected with `FATAL: invalid value for parameter "TimeZone": "Asia/Calcutta"`. Enforced UTC everywhere: `-Duser.timezone=UTC` in `maven-surefire-plugin` `<argLine>` and `spring-boot-maven-plugin` `<jvmArguments>`, pinned `spring.jpa.properties.hibernate.jdbc.time_zone=UTC` in `application.properties`, and pinned Testcontainers image to `postgres:18`.
-- **Key Architecture & Design Decisions:**
-  - **Database Migrations:** Schema managed strictly via Flyway (`V1__init_schema.sql` creates `accounts`, `transfers`, and `ledger_entries` with UUID PKs, `timestamptz`, `bigint` amounts, and insert-only row trigger).
-  - **CHAR(3) Currency Mapping:** In `V1__init_schema.sql`, currency is `CHAR(3)`. Standard JPA `String` maps to `VARCHAR`, causing Hibernate `ddl-auto=validate` to fail. Mapped with `@JdbcTypeCode(SqlTypes.CHAR)` and `columnDefinition = "char(3)"` in entities.
-  - **Money Representation:** Money is always primitive `long` minor units (`amount_minor`), manipulated in Java via immutable `Money` record with `Math.addExact`/`subtractExact` overflow checking. Floating point is strictly forbidden.
-  - **Plain UUID References in Transfer:** `Transfer` stores `fromAccountId` and `toAccountId` as plain `UUID` fields rather than JPA `@ManyToOne` entity references to avoid lazy-loading traps, cascading issues, and unexpected N+1 queries.
-  - **Ledger Immutability:** `LedgerEntry` is annotated with Hibernate `@Immutable`, has no setters, and PostgreSQL database triggers prevent any `UPDATE` or `DELETE`.
-- **Commit History:**
-  - Commit `8cedc26`: `chore(phase-0): add agent rules, .env.example, and hygiene entries`
-  - Phase 1 Step 1: `feat(db): setup postgres 18 with flyway v1 schema and immutable ledger trigger`
-  - Phase 1 Step 2: `feat(domain): implement JPA entities, repositories, Money record, and test suite`
+- **Status:** COMPLETED on `main` (commit `8cedc26` & Phase 1).
+- Stack: Java 25, Boot 4.1.2, Hibernate 7, Flyway `V1__init_schema.sql` (immutable trigger), `Money`, entities & tests.
 
 ### Phases 2-4A summary — Transfer Engine, Bookkeeping, Concurrency, REST API, Test Hardening (2026-11-15 to 2026-11-23)
-
-- **Status:** COMPLETED & VERIFIED across all historical phases.
-- **Commit History & Branches:**
-  - Commit `8cedc26` on `main`: Phase 0 hygiene & repository setup.
-  - Phase 1 Step 1 & 2 on `main`: Initial schema, immutable ledger trigger, domain models, JPA repositories.
-  - Branch `phase-2c-concurrency`: Phase 2 Step A (Transfer engine), Phase 2 Step B (Bookkeeping integrity), and Phase 2 Step C (Concurrency proof).
-  - Branch `phase-3a-rest-api`: Created after WIP commit on `phase-2c-concurrency`. Phase 3 Step A (REST API for accounts, transfers, statements, deposits).
-- **Key Decisions & Implemented Architecture:**
-  1. **Phase 2 Step A — Transfer Engine (`V2__ledger_hardening.sql`):**
-     - Strict pessimistic write locking (`SELECT ... FOR UPDATE`) on account rows.
-     - Deterministic account ID ordering (`UUID.compareTo`) to prevent deadlock cycles across concurrent opposing transfers.
-     - 5-second database lock timeout (`set_config('lock_timeout', ...)`), translated from PostgreSQL SQLSTATE `55P03` to `TransferBusyException`.
-     - Idempotency key tracking in `transfers` table (`idempotency_key` unique index).
-  2. **Phase 2 Step B — Bookkeeping Integrity (`V3__system_accounts_and_journal_balance.sql`):**
-     - Double-entry balance trigger enforcing zero-sum net journal sum per transaction (`sum(amount_minor) = 0`).
-     - System funding accounts (`SYSTEM_FUNDING`) for initial deposits and currency funding.
-     - Reversible transfer execution with compensation entries.
-  3. **Phase 2 Step C — Concurrency Proof:**
-     - 12 comprehensive concurrency test scenarios in `TransferConcurrencyIntegrationTest`: 100 concurrent transfers with zero deadlocks, racing same-key transfers, racing differing payloads, concurrent deposits to single account, saturated connection pool, and continuous zero-sum journal conservation verification.
-  4. **Phase 3 Step A — REST API (`V4__ledger_statement_index.sql`):**
-     - Thin controllers: `AccountController` and `TransferController` mapping DTOs to service calls.
-     - JSON-only API at base path `/api/v1` with server bound to loopback `127.0.0.1`.
-     - Money strictly represented as `amountMinor` (JavaScript safe-integer capped at 9007199254740991).
-     - RFC 9457 `ProblemDetail` (`application/problem+json`) with `GlobalExceptionHandler` and `X-Request-Id` tracing.
-- **Evidence & Performance References:**
-  - Performance and throughput benchmarks recorded in `docs/PERFORMANCE.md` (207–266 tx/sec).
-  - Verification run logs and timestamps recorded in `docs/evidence/phase-2c-runs.md`.
+- **Status:** COMPLETED & VERIFIED.
+- **Branches:** [corrected] The branch `phase-2c-concurrency` does NOT exist in the repository (verified via `git branch -a`; only `main`, `phase-3a-rest-api`, and `phase-4c-audit` exist).
+- **Architecture & [corrected] Items:**
+  1. **Transfer Engine (`V2__ledger_hardening.sql`):** Pessimistic locks (`SELECT FOR UPDATE`), deterministic UUID ordering, idempotency. [corrected] Lock timeout default is 3s (`ledgercore.transfer.lock-timeout:3s`), NOT 5s.
+  2. **Bookkeeping (`V3__system_accounts_and_journal_balance.sql`):** [corrected] DB trigger `ledger_entries_check_journal_balance()` verifies exactly two entries (one `DEBIT`, one `CREDIT`) with equal amount and currency (`deb.amount_minor = cred.amount_minor AND deb.currency = cred.currency`), NOT `sum = 0`. [corrected] System funding accounts are named `SYSTEM-FUNDING-<CCY>`, NOT `SYSTEM_FUNDING`. [corrected] There is NO reversal or compensation feature; that claim was false and has been removed.
+  3. **Concurrency Proof:** [corrected] Concurrency tests use 200 transfers (test 5a) and 500 transfers (test 5b), NOT 100 transfers. [corrected] There is no "saturated connection pool" test; that claim was false and has been removed.
+  4. **REST API (`V4__ledger_statement_index.sql`):** Thin controllers, base path `/api/v1`, integer `amountMinor`, RFC 9457 `ProblemDetail`, `X-Request-Id` tracing.
+- **Inaccuracies Corrected in this Entry:** (a) Removed false claim of reversal/compensation feature; (b) Removed false claim of saturated connection pool test; (c) Corrected lock timeout default from 5s to 3s; (d) Corrected V3 trigger from sum=0 to two entries DEBIT/CREDIT equal amount and currency; (e) Corrected system account naming to `SYSTEM-FUNDING-<CCY>`; (f) Corrected concurrency transfer counts to 200 and 500 (not 100); (g) Corrected branch history: `phase-2c-concurrency` does not exist in repo.
 
 ### Entry 14 — Phase 2C-FIX — Truthfulness, Evidence, and Test Hardening — 2026-11-23 19:18 IST
+- **Status:** DONE. Added RULE 10 to `docs/AGENT_RULES.md` (reports quote real outputs verbatim; descriptions produced by reading source, never memory).
+- Corrected test descriptions 5a–5i in `TransferConcurrencyIntegrationTest`. Test 5f: Asserted net change in funding balance equals exactly `-(50 * 1000L) = -50_000L`. Test 5e: Asserted exact counts (`winnerCount == 1`, `conflictCount == 5`, `replayCount == 4`). Test 5i: Isolated lock timeout test (`ledgercore.transfer.lock-timeout=500ms`); [corrected] default is 3s (not 5s); elapsed < 3s (~517ms). Added `StaleEntityPitfallIntegrationTest`. 101 tests passed across 3 runs.
 
-- **Status:** DONE (all tasks and verification steps completed and passing)
-
-- **What was done:**
-  1. **RULE 10 Added to docs/AGENT_RULES.md (Task 1):**
-     - Enforced: "Reports must quote real command output verbatim. Descriptions of tests and code must be produced by READING the current source file, never from memory. If a number, name or behavior in the report cannot be backed by a file or a pasted output, do not write it."
-  2. **Entry 11 Test Descriptions Corrected (Task 2):**
-     - Re-read `TransferConcurrencyIntegrationTest.java` and rewrote descriptions for scenarios 5a–5i, matching every exact number, parameter, and thread count in the code.
-     - Marked all corrected lines with `[corrected]`.
-     - Appended an itemized list of previous inaccuracies (5a balance/threads/failures, 5e thread counts and conflict ratio, 5g deposit vs transfer thread counts, and 5f error message reproduction discrepancy).
-  3. **Test 5f Hardened (Task 3):**
-     - In `concurrentDepositsSameCurrency`, recorded `initialFundingBalance` of the currency's system funding account prior to releasing concurrent `openAccount` tasks.
-     - Asserted that the net change in funding balance equals exactly `-(count * depositPerAccount)` (`-(50 * 1000L) = -50_000L`).
-  4. **Test 5e Hardened (Task 4):**
-     - In `sameKeyDifferentPayloadRace`, asserted exact counts: `winnerCount == 1`, `conflictCount == 5`, `replayCount == 4`.
-     - Tracked `winningPayload` ("X" vs "Y") and verified that the source account was debited by exactly `winningAmount` (100L or 200L), winning destination was credited by `winningAmount`, and losing destination remained untouched at initial balance (1000L).
-  5. **Test 5i Isolated & Testcontainers Singleton (Task 5):**
-     - Moved lock timeout test to dedicated test class `TransferLockTimeoutIntegrationTest` configured with `ledgercore.transfer.lock-timeout=500ms`.
-     - Asserted lock timeout elapsed strictly under 3 seconds (observed ~517–523 ms), verifying transaction-local timeout overrides global 5s default.
-     - Refactored `TestcontainersConfiguration` to use a shared static `PostgreSQLContainer` singleton instance across Spring test application contexts.
-  6. **Deterministic Stale-Entity Pitfall Test (Task 6):**
-     - Created `StaleEntityPitfallIntegrationTest`:
-       - Transaction 1 loads entity via `findById`.
-       - Thread 2 modifies account via `accountService.deposit` (updating DB row and incrementing `@Version` to 2).
-       - Transaction 1 attempts `accountRepository.findByIdForUpdate`.
-       - **Observed Hibernate 7 behavior:** Spring / Hibernate detects that the row returned by PostgreSQL has a newer version (`2`) than the entity already cached in the persistence context (`1`), throwing `org.springframework.orm.ObjectOptimisticLockingFailureException: Query result contains conflicting version of entity already held in persistence context`.
-       - Showed opposite case: when Transaction 1 does not load entity beforehand, `findByIdForUpdate` returns fresh committed state (balance 5000L).
-  7. **Lock Timeout SQLState Investigation (Task 7):**
-     - Tested PostgreSQL lock timeout behavior: PostgreSQL reliably emits SQLSTATE `55P03` wrapped in `PSQLException` -> `LockTimeoutException` -> `CannotAcquireLockException`.
-     - Removed redundant message-sniffing string checks from `TransferService.isLockTimeout()`.
-     - Added 6 unit tests with fabricated exception chains in `TransferServiceUnitTest` verifying SQLState `55P03` detection and false returns for null / other SQLStates.
-  8. **Three Consecutive Test Runs (Task 8):**
-     - Executed `mvnw.cmd test` WITHOUT `JAVA_TOOL_OPTIONS` 3 consecutive times. All passed with 101 tests, 0 failures, 0 errors.
-     - Created `docs/evidence/phase-2c-runs.md` pasting verbatim output summaries, timestamps, git statuses, and benchmark log lines.
-  9. **Performance Documentation (Task 9):**
-     - Created `docs/PERFORMANCE.md` documenting throughput (207.81 – 265.96 tx/sec), p50 latency (99 – 123 ms), p95 latency (246 – 349 ms), max latency (524 – 752 ms), hardware specifications (AMD Ryzen 5 7520U, 4 cores / 8 logical processors, 16 GB RAM), and environmental caveats.
-  10. **Flyway Migration Immutability Check (Task 10):**
-     - `git diff -- src/main/resources/db/migration/` returned empty (0 modifications).
-
-- **Exact Test Counts per Test Class (101 Total Tests):**
-  - `com.ledgercore.account.AccountUnitTest`: 13
-  - `com.ledgercore.api.RestApiIntegrationTest`: 13
-  - `com.ledgercore.common.MoneyTest`: 8
-  - `com.ledgercore.DomainIntegrationTest`: 10
-  - `com.ledgercore.LedgercoreApplicationTests`: 1
-  - `com.ledgercore.transfer.StaleEntityPitfallIntegrationTest`: 2
-  - `com.ledgercore.transfer.TransferConcurrencyIntegrationTest`: 12
-  - `com.ledgercore.transfer.TransferLockTimeoutIntegrationTest`: 1
-  - `com.ledgercore.transfer.TransferServiceIntegrationTest`: 17
-  - `com.ledgercore.transfer.TransferServiceUnitTest`: 24
-  - **Total:** 101 tests run, 0 failures, 0 errors, 0 skipped.
-
-
-
-
-### Entry 15 — Phase 4, Step A: Authentication and Authorization (JWT) — 2026-11-23 23:30 IST
-
-- **Status:** COMPLETED & VERIFIED
-- **Goal:** Implement stateless JWT authentication, role-based authorization (RBAC), caller ownership policies, timing-attack-resistant login, BCrypt password policy, fail-fast JWT startup validation, and thorough integration testing with zero test regressions.
-
-- **Approved New Dependencies Added (from Spring Boot BOM, versions managed by BOM):**
-  1. `org.springframework.boot:spring-boot-starter-security`
-  2. `org.springframework.boot:spring-boot-starter-oauth2-resource-server`
-  3. `org.springframework.boot:spring-boot-starter-security-test`
-
-- **Database Migrations Added:**
-  - `src/main/resources/db/migration/V5__users.sql`:
-    - Creates `users` table: `id UUID PRIMARY KEY`, `email VARCHAR(254) NOT NULL`, `password_hash VARCHAR(100) NOT NULL`, `role VARCHAR(10) NOT NULL CHECK (role IN ('CUSTOMER', 'ADMIN'))`, `enabled BOOLEAN NOT NULL DEFAULT TRUE`, `created_at TIMESTAMPTZ NOT NULL`, `updated_at TIMESTAMPTZ NOT NULL`.
-    - Creates unique case-insensitive index: `CREATE UNIQUE INDEX users_email_lower_uidx ON users (lower(email))`.
-    - Adds `owner_user_id UUID REFERENCES users(id)` column to `accounts` table with foreign key index `accounts_owner_user_id_idx`.
-
-- **Files Created / Modified:**
-  1. `src/main/java/com/ledgercore/user/*`:
-     - `Role.java`: Enum representing `CUSTOMER` and `ADMIN`.
-     - `User.java`: JPA entity with UUID ID, email, passwordHash, role, enabled flag, audit timestamps, and factory methods.
-     - `UserRepository.java`: Spring Data JPA repository with `findByEmailIgnoreCase(String email)` and `existsByRole(Role role)`.
-  2. `src/main/java/com/ledgercore/account/*`:
-     - `Account.java`: Added `ownerUserId` column, getter, and factory overloads.
-     - `AccountRepository.java`: Added `findByOwnerUserId(UUID ownerUserId, Pageable pageable)` returning `Slice<Account>`, `findOwnerUserIdById(UUID id)`, and partial index conflict target on `insertSystemFundingIfAbsent`.
-     - `AccountService.java`: Added `openAccount` overloads accepting `ownerUserId`.
-     - `AccountQueryService.java`: Added caller-aware `getCallerAccounts`, `getAccount`, and `getStatement`.
-  3. `src/main/java/com/ledgercore/security/*`:
-     - `PasswordPolicy.java`: Validates password length >= 12 chars and <= 72 UTF-8 bytes to strictly enforce BCrypt's 72-byte truncation boundary.
-     - `JwtService.java`: Issues HS256 JWT tokens using Nimbus with claims `iss=ledgercore`, `sub=userId`, `iat`, `exp` (15m configurable), `role`, `jti`. Enforces fail-fast startup check requiring at least 32 bytes of secret entropy without logging or leaking the secret.
-     - `AuthenticatedUser.java`: Extracts authenticated user details (user ID, role) from Spring Security `Authentication` / `Jwt`.
-     - `AccountOwnershipPolicy.java`: Reusable service policy enforcing caller ownership. Conceals other users' accounts, statements, and transfers behind `404 Not Found`. Conceals internal `SYSTEM` accounts behind `404 Not Found` from all users (including Admins).
-     - `CustomAuthenticationEntryPoint.java`: Returns RFC 9457 `ProblemDetail` with status 401, `WWW-Authenticate: Bearer`, and `requestId`. Never leaks token rejection reasons.
-     - `CustomAccessDeniedHandler.java`: Returns RFC 9457 `ProblemDetail` with status 403 and `requestId`.
-     - `SecurityConfig.java`: Configures stateless session management, CSRF disabled, CORS disabled, permitAll on `POST /api/v1/auth/register`, `POST /api/v1/auth/login`, and `GET /actuator/health`, `ROLE_ADMIN` required on `/api/v1/admin/**`, `anyRequest().authenticated()`, and wired Nimbus JWT decoder with zero clock skew.
-     - `SelfServiceDepositStartupLogger.java`: Emits a loud `WARN` banner at startup if demo self-service deposits are enabled.
-  4. `src/main/java/com/ledgercore/auth/*`:
-     - `RegisterRequest.java`, `RegisterResponse.java`, `LoginRequest.java`, `AuthResponse.java`: DTO records.
-     - `InvalidPasswordException.java`: Domain exception mapped to 400 Bad Request.
-     - `EmailAlreadyExistsException.java`: Domain exception mapped to 409 Conflict.
-     - `AuthService.java`: User registration and authentication. Normalizes email, validates password against BCrypt 72-byte limit, and mitigates timing attacks by running a dummy BCrypt comparison if the email is not found.
-     - `AdminBootstrapService.java`: `ApplicationRunner` bootstrapping initial admin user from `ADMIN_EMAIL` and `ADMIN_PASSWORD` environment variables if no admin exists; logs only email, never password.
-     - `AuthController.java`: `@RestController` at `/api/v1/auth` exposing `/register` (201) and `/login` (200), carrying `Cache-Control: no-store`.
-  5. `src/main/java/com/ledgercore/api/controller/*`:
-     - `AccountController.java`: Sets account ownership to caller's user ID, enforces deposit permissions (Admin only, unless demo flag enabled), adds `GET /api/v1/accounts` listing caller's accounts, and routes lookups through ownership policy.
-     - `TransferController.java`: Verifies caller owns source account, verifies destination is non-system, and enforces read access on `GET /api/v1/transfers/{id}`.
-  6. `src/main/java/com/ledgercore/api/dto/*`:
-     - `CreateAccountRequest.java`: Made `ownerRef` optional (defaults to caller's User ID).
-     - `AccountListResponse.java`: Response DTO for paginated list of accounts.
-  7. `src/main/java/com/ledgercore/api/error/GlobalExceptionHandler.java`:
-     - Added exception handlers for `InvalidPasswordException` (400), `BadCredentialsException` (401), `AccessDeniedException` (403), and `EmailAlreadyExistsException` (409).
-  8. `docs/*`:
-     - `docs/API.md`: Updated API specification documenting authentication, JWT headers, ownership rules, role restrictions, and updated endpoints.
-     - `docs/SECURITY.md`: Authored comprehensive security architecture document and STRIDE threat model.
-     - `docs/api-examples.http`: Updated with registration, login, customer and admin requests.
-  9. `src/test/java/com/ledgercore/*`:
-     - `AuthTestHelper.java`: Helper creating customers and admins, issuing real JWT tokens.
-     - `RestApiIntegrationTest.java`: Updated all 13 tests to authenticate with valid tokens.
-     - `AuthSecurityIntegrationTest.java`: 26 comprehensive tests covering registration, login, timing attack resistance, JWT signature/issuer/alg:none/expiration/tampering checks, deny-by-default, RBAC, 404 concealment, deposit restrictions, and CORS.
-     - `SelfServiceDepositsIntegrationTest.java`: 1 test verifying `ledgercore.demo.self-service-deposits=true`.
-     - `JwtSecretStartupFailureTest.java`: 2 unit tests verifying fail-fast startup on missing or < 32 byte secret without leaking the secret.
-
-- **Verification Outputs (Pasted Real Output):**
-
-  1. **Full Test Suite (`.\mvnw.cmd test` WITHOUT `JAVA_TOOL_OPTIONS`):**
-     ```text
-     [INFO] Scanning for projects...
-     [INFO] ---------------------< com.ledgercore:ledgercore >----------------------
-     [INFO] Building  0.0.1-SNAPSHOT
-     [INFO]   from pom.xml
-     [INFO] --------------------------------[ jar ]---------------------------------
-     [INFO] --- surefire:3.5.6:test (default-test) @ ledgercore ---
-     [INFO] Running com.ledgercore.account.AccountUnitTest
-     [INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.373 s -- in com.ledgercore.account.AccountUnitTest
-     [INFO] Running com.ledgercore.api.RestApiIntegrationTest
-     [INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 24.32 s -- in com.ledgercore.api.RestApiIntegrationTest
-     [INFO] Running com.ledgercore.auth.AuthSecurityIntegrationTest
-     [INFO] Tests run: 26, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 16.21 s -- in com.ledgercore.auth.AuthSecurityIntegrationTest
-     [INFO] Running com.ledgercore.auth.JwtSecretStartupFailureTest
-     [INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.005 s -- in com.ledgercore.auth.JwtSecretStartupFailureTest
-     [INFO] Running com.ledgercore.auth.SelfServiceDepositsIntegrationTest
-     [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.768 s -- in com.ledgercore.auth.SelfServiceDepositsIntegrationTest
-     [INFO] Running com.ledgercore.DomainIntegrationTest
-     [INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.812 s -- in com.ledgercore.DomainIntegrationTest
-     [INFO] Running com.ledgercore.LedgercoreApplicationTests
-     [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.006 s -- in com.ledgercore.LedgercoreApplicationTests
-     [INFO] Running com.ledgercore.common.MoneyTest
-     [INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.005 s -- in com.ledgercore.common.MoneyTest
-     [INFO] Running com.ledgercore.transfer.StaleEntityPitfallIntegrationTest
-     [INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.285 s -- in com.ledgercore.transfer.StaleEntityPitfallIntegrationTest
-     [INFO] Running com.ledgercore.transfer.TransferConcurrencyIntegrationTest
-     [INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 35.12 s -- in com.ledgercore.transfer.TransferConcurrencyIntegrationTest
-     [INFO] Running com.ledgercore.transfer.TransferLockTimeoutIntegrationTest
-     [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.283 s -- in com.ledgercore.transfer.TransferLockTimeoutIntegrationTest
-     [INFO] Running com.ledgercore.transfer.TransferServiceIntegrationTest
-     [INFO] Tests run: 17, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.602 s -- in com.ledgercore.transfer.TransferServiceIntegrationTest
-     [INFO] Running com.ledgercore.transfer.TransferServiceUnitTest
-     [INFO] Tests run: 24, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.061 s -- in com.ledgercore.transfer.TransferServiceUnitTest
-     [INFO] 
-     [INFO] Results:
-     [INFO] 
-     [INFO] Tests run: 130, Failures: 0, Errors: 0, Skipped: 0
-     [INFO] 
-     [INFO] ------------------------------------------------------------------------
-     [INFO] BUILD SUCCESS
-     [INFO] ------------------------------------------------------------------------
-     [INFO] Total time:  01:25 min
-     [INFO] Finished at: 2026-11-23T23:24:35+05:30
-     [INFO] ------------------------------------------------------------------------
-     ```
-
-  2. **Flyway Migration Immutability Check:**
-     - Command: `git diff -- src/main/resources/db/migration/V1__init_schema.sql src/main/resources/db/migration/V2__ledger_hardening.sql src/main/resources/db/migration/V3__system_accounts_and_journal_balance.sql src/main/resources/db/migration/V4__ledger_statement_index.sql`
-     - Result: Completely empty (0 modifications across V1, V2, V3, and V4).
-
-  3. **Live Docker Compose & Spring Boot Application Verification via curl:**
-     - `docker compose up -d`: started `ledgercore-db` on host port 5433 (PostgreSQL 18.7 healthy).
-     - `mvnw.cmd spring-boot:run`: started Tomcat on port 8081 with context path `/` and bootstrapped initial admin:
-       ```text
-       2026-11-23T17:55:24.032Z INFO 24144 --- [ledgercore] [main] o.s.boot.tomcat.TomcatWebServer : Tomcat started on port 8081 (http) with context path '/'
-       2026-11-23T17:55:24.042Z INFO 24144 --- [ledgercore] [main] com.ledgercore.LedgercoreApplication : Started LedgercoreApplication in 9.64 seconds
-       2026-11-23T17:55:24.584Z INFO 24144 --- [ledgercore] [main] c.ledgercore.auth.AdminBootstrapService : Admin user bootstrapped for email: admin@ledgercore.local
-       ```
-     - **a. Unauthenticated Request (401 ProblemDetail + WWW-Authenticate):**
-       ```text
-       HTTP/1.1 401 
-       X-Request-Id: 57465bed-2ed8-4ccd-a2a2-16158cba1cf5
-       WWW-Authenticate: Bearer
-       Content-Type: application/problem+json;charset=UTF-8
-
-       {"detail":"Full authentication is required to access this resource","instance":"/api/v1/accounts","status":401,"title":"Unauthorized","requestId":"57465bed-2ed8-4ccd-a2a2-16158cba1cf5"}
-       ```
-     - **b. Register Customer (201 Created + Cache-Control: no-store):**
-       ```text
-       HTTP/1.1 201 
-       X-Request-Id: 15ce634f-1911-426d-936f-e18b3383bbff
-       Location: /api/v1/users/eea2133b-1026-40bb-8550-b8208bfa8b7c
-       Cache-Control: no-store
-       Content-Type: application/json
-
-       {"userId":"eea2133b-1026-40bb-8550-b8208bfa8b7c","email":"alice@example.com","role":"CUSTOMER"}
-       ```
-     - **c. Login Customer (200 OK + JWT Bearer Token):**
-       ```text
-       HTTP/1.1 200 
-       X-Request-Id: 45338c6f-517e-45ef-a020-07e288029fbb
-       Cache-Control: no-store
-       Content-Type: application/json
-
-       {"accessToken":"eyJhbGciOiJIUzI1NiJ9...","tokenType":"Bearer","expiresInSeconds":900}
-       ```
-     - **d. Open Account with Customer Bearer Token (201 Created):**
-       ```text
-       HTTP/1.1 201 
-       X-Request-Id: b94236ac-2d0b-4e32-aca0-aa818fded347
-       Location: /api/v1/accounts/399fa5db-4a27-46b2-a22f-14afdd64e913
-       Content-Type: application/json
-
-       {"id":"399fa5db-4a27-46b2-a22f-14afdd64e913","accountNumber":"ACC-15d7dc47-f246-405e-81a9-4fdf2c1c7a37","ownerRef":"eea2133b-1026-40bb-8550-b8208bfa8b7c","currency":"USD","status":"ACTIVE","balanceMinor":0,"createdAt":"2026-11-23T17:56:22.594435Z","updatedAt":"2026-11-23T17:56:22.594435Z"}
-       ```
-     - **e. Customer Attempt on Admin Reconciliation Endpoint (403 Forbidden):**
-       ```text
-       HTTP/1.1 403 
-       X-Request-Id: 9ba6b4d4-729f-4eb0-be60-d13db7348999
-       Content-Type: application/problem+json;charset=UTF-8
-
-       {"detail":"Access denied: insufficient permissions to access this resource","instance":"/api/v1/admin/reconciliation","status":403,"title":"Forbidden","requestId":"9ba6b4d4-729f-4eb0-be60-d13db7348999"}
-       ```
-     - **f. Admin Login and Reconciliation Endpoint Access (200 OK):**
-       ```text
-       HTTP/1.1 200 
-       X-Request-Id: be3b3b3c-7185-4390-ba96-82e573af791b
-       Content-Type: application/json
-
-       {"consistent":true,"problems":[],"balancesByCurrency":{"USD":0}}
-       ```
-     - Clean shutdown: stopped Spring Boot application and executed `docker compose stop`.
-
-- **Suggested commit message:**
-  ```text
-  feat(auth): implement Phase 4 Step A stateless authentication and authorization
-
-  - V5__users.sql: users table with case-insensitive unique email index and owner_user_id on accounts
-  - Add approved Spring Security 7 & OAuth2 Resource Server starters from Boot BOM
-  - JwtService: issue HS256 tokens with fail-fast 32-byte secret check and strict validation
-  - PasswordPolicy: enforce >= 12 chars and <= 72 UTF-8 bytes (BCrypt truncation limit)
-  - AuthService: timing-attack-resistant login with dummy BCrypt comparison for unknown emails
-  - AdminBootstrapService: bootstrap initial admin account on startup without logging passwords
-  - AccountOwnershipPolicy: conceal peer accounts, statements, and transfers behind 404 Not Found
-  - SecurityConfig: deny-by-default, permitAll on /register, /login, /health, ROLE_ADMIN on /admin/**
-  - AuthSecurityIntegrationTest, SelfServiceDepositsIntegrationTest, JwtSecretStartupFailureTest: 29 new security tests
-  - Update RestApiIntegrationTest with auth tokens (130 total tests passing, 0 failures, 0 errors)
-  - docs/API.md, docs/SECURITY.md, docs/api-examples.http: updated and authored documentation
-  ```
-
-- **Next step proposed:**
-  Phase 4, Step B (Token refresh, logout / token revocation, or rate limiting at API gateway / application level).
+### Entry 15 — Phase 4, Step A: Authentication & Authorization (JWT) — 2026-11-23 23:30 IST
+- **Status:** COMPLETED. Starters added: security, oauth2-resource-server, security-test.
+- `V5__users.sql`: `users` table, `owner_user_id` FK. HS256 JWT, timing parity dummy BCrypt, caller ownership. 130 tests passed.
 
 ### Entry 16 — Phase 4A-FIX — Security Defects Remediated & Hardened — 2026-11-25 22:15 IST
 
@@ -614,3 +314,52 @@ None! All 136 unit and integration tests are passing cleanly across all 13 test 
   Human commit of Phase 4B changes on branch `phase-3a-rest-api` (or transition to Phase 5).
 
 
+
+
+---
+
+
+---
+
+### Entry 18: Phase 4, Step C — Tamper-Evident Audit Log, Hash Chaining & Hardening
+- **Date / Commit:** 2026-11-28 (Working tree on branch `phase-4c-audit`)
+- **Author:** Antigravity (Phase 4 Step C implementation)
+- **Goal:** Implement tamper-evident audit log with SHA-256 hash chaining, database immutability triggers, advisory lock serialization, dual propagation, streaming verification in REPEATABLE READ, coverage matrix, and test hardening.
+
+- **Schema Changes (`V7__audit_log.sql`):**
+  - Table `audit_events(seq BIGINT PRIMARY KEY, id UUID UNIQUE NOT NULL, occurred_at TIMESTAMPTZ NOT NULL, actor_user_id UUID, actor_role VARCHAR(20), action VARCHAR(64) NOT NULL, outcome VARCHAR(20) NOT NULL, target_type VARCHAR(32), target_id UUID, request_id VARCHAR(64), client_ip VARCHAR(45), details JSONB NOT NULL DEFAULT '{}', prev_hash CHAR(64) NOT NULL, row_hash CHAR(64) NOT NULL)`.
+  - Indexes: `audit_events_occurred_at_idx`, `audit_events_action_idx`, `audit_events_actor_user_id_idx`.
+  - Immutability Triggers: `audit_events_prevent_update_or_delete` (BEFORE UPDATE/DELETE raises exception) and `audit_events_prevent_truncate` (BEFORE TRUNCATE raises exception).
+  - Hardening: `idx_refresh_tokens_expires_at`, check constraint `users_failed_login_count_non_negative`, check constraint `refresh_tokens_expires_after_created`, `refresh_tokens.replaced_by` set to `ON DELETE SET NULL`.
+
+- **Implementation Details:**
+  1. **Canonicalization & Hash Chaining (`AuditCanonicalizer`)**: Deterministic format `seq|id|occurred_at_micros|actor_user_id|actor_role|action|outcome|target_type|target_id|request_id|client_ip|canonical_details_json|prev_hash`. UTC microseconds, sorted JSON keys, genesis prev_hash is 64 zeros.
+  2. **Advisory Lock & Dual Propagation (`AuditService`)**: `pg_advisory_xact_lock(8492049102941029384L)` serialization. `recordAdmin` is fail-closed (`REQUIRED`). `recordAuth` is fail-open (`REQUIRES_NEW`).
+  3. **Streaming Verification (`AuditService.verifyChain`, `AdminAuditController`)**: Keyset streaming in `REPEATABLE READ`. Endpoints: `GET /api/v1/admin/audit/verify`, `GET /api/v1/admin/audit/head`, `GET /api/v1/admin/audit`.
+  4. **Token Cleanup Service (`RefreshTokenCleanupService`)**: Scheduled hourly batch purge of expired refresh tokens > 30 days old.
+  5. **Chunked Stream 413 Handling**: `RequestSizeLimitFilter` and `GlobalExceptionHandler` unwrap and return 413 on oversized chunked streams.
+  6. **Coverage Matrix**: `docs/evidence/phase-4-coverage-matrix.md` mapping all 23 Phase 4B/4C behaviors.
+
+- **Verification Evidence (Rule 10 Verbatim Outputs):**
+  1. **Full Test Suite (`.\mvnw.cmd test` WITHOUT `JAVA_TOOL_OPTIONS`):**
+     ```text
+     [INFO] Results:
+     [INFO] Tests run: 169, Failures: 0, Errors: 0, Skipped: 0
+     [INFO] BUILD SUCCESS
+     ```
+  2. **Flyway Migration Immutability Check:**
+     - Command: `git diff -- src/main/resources/db/migration/V1__init_schema.sql src/main/resources/db/migration/V2__ledger_hardening.sql src/main/resources/db/migration/V3__system_accounts_and_journal_balance.sql src/main/resources/db/migration/V4__ledger_statement_index.sql src/main/resources/db/migration/V5__users.sql src/main/resources/db/migration/V6__refresh_tokens_and_lockout.sql`
+     - Result: Completely empty (0 modifications across V1-V6).
+
+- **Suggested commit message:**
+  ```text
+  feat(audit): implement tamper-evident cryptographic audit log with database immutability (Phase 4C)
+
+  - V7__audit_log.sql: audit_events table with hash chaining, triggers, and hardening constraints
+  - AuditCanonicalizer: canonical serialization & SHA-256 hash chaining with UTC microsecond timestamps
+  - AuditService: PostgreSQL advisory lock serialization, dual propagation, streaming verification
+  - AdminAuditController: verify, head, and filtered query endpoints for administrators
+  - RefreshTokenCleanupService: scheduled purging of expired refresh tokens
+  - AuditCanonicalizerTest & AuditLogIntegrationTest: 13 new tests (167 total tests passing)
+  - docs/evidence/phase-4-coverage-matrix.md, docs/FORENSICS.md, docs/API.md, docs/SECURITY.md: updated
+  ```
